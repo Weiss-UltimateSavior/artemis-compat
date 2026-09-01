@@ -1,0 +1,28 @@
+# build directories (cmake)
+build-*/
+build-host/
+build-android/
+
+# compiled artifacts
+*.so
+*.a
+*.o
+*.obj
+*.dylib
+
+# game assets / packs (never ship)
+*.pfs
+*.pfs.*
+*.ogg
+*.ast
+*.asb
+savedata/
+
+# editor / ide
+.idea/
+.vscode/
+*.user
+*.suo
+
+# os
+.DS_Store
