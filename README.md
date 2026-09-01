@@ -8,6 +8,8 @@
 
 目前实测游戏：**闪亮女友**（安卓，真机可玩闭环）、Real Hentai Situation! DT（PC 脚本解析/解码）。
 
+处于初期，希望各位能够参与建设，帮助完善。整个项目代码基于DeepSeek-V4f与Glm-5.3f产出。原谅我的囊中羞涩。
+
 ---
 
 ## 当前能力（M0 → M3）
@@ -66,16 +68,6 @@ artc drive   <pack> --frames N --tap x,y@f   # host 帧循环驱动器（注入�
 | 闪亮女友 `root.pfs`（安卓） | 真机**可玩闭环**：标题→故事→台词（坐标/折行）→点击推进→CG 切换→BGM/语音/SE 出声 |
 | RealHentaiSituationDT `reaanidt.pfs`（PC，1047 文件） | 自动派生 ✓；ini 全平台节干净；148 个 .ast 多语言行格式完整解码 |
 | カラーマリス `main.16.*.obb`（Android OBB，829 文件） | 自动派生 ✓；TTF/JPG 魔数全对 | 
-
-## 实测修复记录（真机回归，M3）
-
-- 进不去标题 → z 排序改官方 `spec/layer.md` 图层 ID 排序（修 `bg` 全屏拦截点击）
-- 有对话框无台词 → `font` 标签加载 + `chgmsg`/`print` 管线 + SetText replaced 尺寸更新
-- 台词偏左/单行溢出 → SetText **多行折行** + 折行宽度兜底
-- 顶栏偏移回归 → 坐标模型回退"绝对坐标 + 未定位继承"（不改双叠累加）
-- 无声 → **stb_vorbis + OpenSL ES** 音频管线（BGM/SE/语音 + 生命周期静音）
-
-详见《Artemis兼容引擎-进度日志.md》。
 
 ## 接入官方模板壳
 
