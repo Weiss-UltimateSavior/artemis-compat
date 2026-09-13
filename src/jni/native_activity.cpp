@@ -389,7 +389,7 @@ void EngineThreadMain(ANativeActivity *activity) {
                              name.c_str(), file.c_str(), label.c_str());
                         runner.Jump(file, label);
                     } else {
-                        g_state.lua->DispatchTag(name, attrs);
+                        g_state.lua->DispatchTag(name, attrs, false);
                     }
                 }
             };

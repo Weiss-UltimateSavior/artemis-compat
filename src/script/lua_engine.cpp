@@ -681,6 +681,7 @@ bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
         {"getScriptBlock", l_getScriptBlock},
         {"bindSurface", l_noop},
         {"clearSurfaceLoadQueue", l_noop},
+        {"isLoadingSurface", l_noop},
         // KrKr2-Next: surface cache release is a no-op without a surface
         // cache; PNG text chunks carry the face-part anchors (image_fg.lua
         // getfgfilepos → "pos,x,y[,w,h,frames,com]").
@@ -3052,7 +3053,7 @@ int LuaEngine::FilterTag(const std::string &tag,
             lua_pushlstring(L_, kv.second.data(), kv.second.size());
             lua_setfield(L_, -2, kv.first.c_str());
         }
-        lua_remove(L_, -3); // drop the filter table below the function
+        lua_remove(L_, -4); // drop the filter table below fn/bridge/attrs
         nargs = 2;
     } else {
         lua_pop(L_, 1);
@@ -3086,12 +3087,15 @@ int LuaEngine::l_setTagFilter(lua_State *L) {
 }
 
 bool LuaEngine::DispatchTag(const std::string &tag,
-                            const std::vector<std::pair<std::string, std::string>> &attrs) {
+                            const std::vector<std::pair<std::string, std::string>> &attrs,
+                            bool apply_filter) {
     if (!L_) return false;
     std::string replacement;
-    const int filtered = FilterTag(tag, attrs, &replacement);
-    if (filtered == 1) return true; // intercepted
-    const std::string &effective = (filtered == 2 && !replacement.empty()) ? replacement : tag;
+    if (apply_filter) {
+        const int filtered = FilterTag(tag, attrs, &replacement);
+        if (filtered == 1) return true; // intercepted
+    }
+    const std::string &effective = (apply_filter && !replacement.empty()) ? replacement : tag;
     lua_getglobal(L_, kBridgeTable);
     if (!lua_istable(L_, -1)) { lua_pop(L_, 1); return false; }
     lua_getfield(L_, -1, "tag");

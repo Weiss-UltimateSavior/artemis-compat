@@ -136,7 +136,7 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
                                   " label=" + label);
                 runner->Jump(file, label);
             } else {
-                lua->DispatchTag(name, attrs);
+                lua->DispatchTag(name, attrs, false);
             }
         }
         lua->SetScriptRunner(runner.get());
@@ -200,7 +200,7 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
                                   " label=" + label);
                 runner->Jump(file, label);
             } else {
-                lua->DispatchTag(name, attrs);
+                lua->DispatchTag(name, attrs, false);
             }
         }
     };

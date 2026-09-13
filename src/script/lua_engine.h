@@ -51,8 +51,11 @@ public:
     bool CallGlobal(const std::string &fn);
     bool CallGlobalInternal(const std::string &fn, bool quiet);
     // Dispatch an engine tag through the e:tag bridge (iet [tag ...] lines).
+    // `apply_filter` is false for engine-internal queued tags (eqwait drains)
+    // so the framework's tag filter cannot re-enqueue itself.
     bool DispatchTag(const std::string &tag,
-                     const std::vector<std::pair<std::string, std::string>> &attrs);
+                     const std::vector<std::pair<std::string, std::string>> &attrs,
+                     bool apply_filter = true);
     std::string ResolveValue(const std::string& value) const;
 
     // ---- input & frame hooks (M2.2) ----

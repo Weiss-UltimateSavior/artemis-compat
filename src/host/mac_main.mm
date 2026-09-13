@@ -249,7 +249,7 @@ struct Engine {
                 if (name == "call") runner.Call(file, label);
                 else runner.Jump(file, label);
             } else {
-                lua->DispatchTag(name, attrs);
+                lua->DispatchTag(name, attrs, false);
             }
         }
     }
