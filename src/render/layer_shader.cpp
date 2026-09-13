@@ -8,6 +8,7 @@
 #if defined(ARTC_HAS_GLES)
 #include "render/gles2_headers.h"
 #include "render/shader_compat.h"
+#include "render/hlsl_glsl.h"
 #endif
 namespace artc {
 void LayerEffect::Set(const std::map<std::string,std::string>& attrs) {
@@ -89,7 +90,8 @@ std::vector<float> Numbers(std::string s) {
 void Uniform(uint32_t p,const char* name,float value) {glUniform1f(glGetUniformLocation(p,name),value);}
 }
 uint32_t LayerShaders::Compile(const std::string& source,bool wrap) {
-    std::string fragment=source;
+    // Artemis PC effects are an HLSL subset; adapt them to GLSL first.
+    std::string fragment=LooksLikeHlsl(source)?TranslateHlslToGlsl(source):source;
     if(wrap) {
         // Keep an optional #version as the first directive. Game shaders produce
         // straight RGBA; the wrapper applies group opacity exactly once and
