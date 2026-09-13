@@ -12,7 +12,8 @@
 #endif
 
 #if defined(ARTC_HAS_GLES)
-#include <GLES2/gl2.h>
+#include "render/gles2_headers.h"
+#include "render/shader_compat.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "render/stb_image.h"
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -622,8 +623,10 @@ void main() {
 // Artemis layer ids sort by their leading integer ("600.4.0" → 600,
 // "1.80.mw" → 1, "-273" → -273); non-numeric ids keep insertion order.
 uint32_t CompileShader(uint32_t type, const char *src) {
+    const std::string code = ShaderSourceForBackend(src);
+    const char *text = code.c_str();
     uint32_t s = glCreateShader(type);
-    glShaderSource(s, 1, &src, nullptr);
+    glShaderSource(s, 1, &text, nullptr);
     glCompileShader(s);
     return s;
 }

@@ -52,6 +52,21 @@ cmake --build build-test -j8
 ctest --test-dir build-test --output-on-failure
 ```
 
+### macOS 原生宿主（`artemis-mac`）
+
+Cocoa 窗口 + legacy OpenGL 2.1 上下文，用真实 GL 渲染运行游戏。GLES2 入口与
+GLSL ES 源码在 `src/render/gles2_headers.h` / `src/render/shader_compat.h` 中适配到
+桌面 GL。该目标把核心以 `ARTC_HAS_GLES` 重新编译；`artemis_core`（CLI/回归）保持
+无 GL 的数学实现，二者互不影响。
+
+```bash
+cmake -B build-mac -DCMAKE_BUILD_TYPE=Release
+cmake --build build-mac --target artemis-mac -j8
+./build-mac/artemis-mac "/path/to/game"      # 目录或 root.pfs；默认 --os windows
+```
+
+鼠标左键=点击/拖拽，方向键/回车/退格/Esc 映射官方 key id。
+
 ### Android 构建（NDK）
 
 ```bash
@@ -134,6 +149,7 @@ src/
   log/      OutputLog 管线 + 宿主 sink
   jni/      Android JNI 六接口 + ANativeActivity
   cli/      artc 宿主工具
+  host/     macOS 原生宿主（Cocoa 窗口 + GL）
 tests/      宿主回归（合成夹具）
 third_party/  lua-5.1.5 (MIT) · stb_vorbis (public domain)
 ```

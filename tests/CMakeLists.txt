@@ -27,7 +27,7 @@ add_test(NAME audio_stream_regressions COMMAND audio_stream_regressions)
 
 # Video decoding only when the core was built with FFmpeg and the tool is
 # available to synthesize a fixture.
-get_target_property(ARTC_DEFINES artemis_core INTERFACE_COMPILE_DEFINITIONS)
+get_target_property(ARTC_DEFINES artemis_deps INTERFACE_COMPILE_DEFINITIONS)
 if(ARTC_DEFINES AND "ARTC_HAS_FFMPEG=1" IN_LIST ARTC_DEFINES)
     find_program(ARTC_FFMPEG_TOOL ffmpeg)
     if(ARTC_FFMPEG_TOOL)

@@ -11,6 +11,11 @@ add_compile_options(-Wall -Wextra)
 option(ARTC_BUILD_CLI "Build host CLI test tool (artc)" ON)
 option(ARTC_BUILD_JNI "Build Android JNI layer (libartemis.so)" OFF)
 option(ARTC_BUILD_TESTS "Build the host regression suite" OFF)
+if(APPLE)
+    option(ARTC_BUILD_MAC_HOST "Build the native macOS GL host" ON)
+else()
+    option(ARTC_BUILD_MAC_HOST "Build the native macOS GL host" OFF)
+endif()
 
 # ---- vendored Lua 5.1.5 (static, no standalone interpreters) ----
 file(GLOB LUA_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua-5.1.5/src/*.c)
@@ -27,7 +32,34 @@ if(ANDROID)
     target_compile_options(lua51 PRIVATE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 endif()
 
-# ---- core engine (portable: pack/config/script/log) ----
+# ---- shared dependencies (lua, zlib, optional FFmpeg) ----
+find_package(ZLIB REQUIRED)
+add_library(artemis_deps INTERFACE)
+target_include_directories(artemis_deps INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(artemis_deps INTERFACE lua51 ZLIB::ZLIB)
+
+# Movie playback uses FFmpeg when the host provides it; the video decoder
+# compiles to a stub otherwise.
+option(ARTC_ENABLE_FFMPEG "Decode Artemis movies with FFmpeg" ON)
+if(ARTC_ENABLE_FFMPEG)
+    if(FFMPEG_FOUND)
+        target_include_directories(artemis_deps INTERFACE ${FFMPEG_INCLUDE_DIRS})
+        target_link_libraries(artemis_deps INTERFACE ${FFMPEG_LIBRARIES})
+        target_compile_definitions(artemis_deps INTERFACE ARTC_HAS_FFMPEG=1)
+    elseif(NOT CMAKE_CROSSCOMPILING)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(ARTC_FFMPEG QUIET IMPORTED_TARGET
+                libavformat libavcodec libavutil libswresample libswscale)
+            if(ARTC_FFMPEG_FOUND)
+                target_link_libraries(artemis_deps INTERFACE PkgConfig::ARTC_FFMPEG)
+                target_compile_definitions(artemis_deps INTERFACE ARTC_HAS_FFMPEG=1)
+            endif()
+        endif()
+    endif()
+endif()
+
+# ---- core engine (portable: pack/config/script/log/render/audio) ----
 file(GLOB_RECURSE ARTC_CORE_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pack/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/config/*.cpp
@@ -36,41 +68,15 @@ file(GLOB_RECURSE ARTC_CORE_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/render/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/*.cpp)
 add_library(artemis_core STATIC ${ARTC_CORE_SOURCES})
-target_include_directories(artemis_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_include_directories(artemis_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/render
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
-
-# Native save / snapshot / PSB decoding rely on zlib.
-find_package(ZLIB REQUIRED)
-target_link_libraries(artemis_core PUBLIC lua51 ZLIB::ZLIB)
+target_link_libraries(artemis_core PUBLIC artemis_deps)
 
 # The GLES2 compositor and layer shaders are enabled where a GL context is
-# available (Android always; OpenHarmony sets ARTC_HAS_GLES from its host
-# build). Without it the compositor falls back to a math-only build.
+# available (Android always; the macOS host sets it in its own target).
 if(ANDROID)
     target_compile_definitions(artemis_core PUBLIC ARTC_HAS_GLES=1)
-endif()
-
-# Movie playback uses FFmpeg when the host provides it; the video decoder
-# compiles to a stub otherwise.
-option(ARTC_ENABLE_FFMPEG "Decode Artemis movies with FFmpeg" ON)
-if(ARTC_ENABLE_FFMPEG)
-    if(FFMPEG_FOUND)
-        target_include_directories(artemis_core PRIVATE ${FFMPEG_INCLUDE_DIRS})
-        target_link_libraries(artemis_core PUBLIC ${FFMPEG_LIBRARIES})
-        target_compile_definitions(artemis_core PUBLIC ARTC_HAS_FFMPEG=1)
-    elseif(NOT CMAKE_CROSSCOMPILING)
-        find_package(PkgConfig QUIET)
-        if(PkgConfig_FOUND)
-            pkg_check_modules(ARTC_FFMPEG QUIET IMPORTED_TARGET
-                libavformat libavcodec libavutil libswresample libswscale)
-            if(ARTC_FFMPEG_FOUND)
-                target_link_libraries(artemis_core PUBLIC PkgConfig::ARTC_FFMPEG)
-                target_compile_definitions(artemis_core PUBLIC ARTC_HAS_FFMPEG=1)
-            endif()
-        endif()
-    endif()
 endif()
 
 # ---- host CLI test tool ----
@@ -96,4 +102,20 @@ endif()
 if(ARTC_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# ---- native macOS GL host (Cocoa window + legacy OpenGL context) ----
+if(ARTC_BUILD_MAC_HOST AND APPLE)
+    enable_language(OBJCXX)
+    # Recompile the core with ARTC_HAS_GLES so the compositor/layer shaders use
+    # the real GL path (artemis_core stays math-only for the CLI/tests).
+    add_executable(artemis-mac ${ARTC_CORE_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/host/mac_main.mm)
+    target_include_directories(artemis-mac PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/render
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+    target_compile_definitions(artemis-mac PRIVATE ARTC_HAS_GLES=1)
+    target_compile_options(artemis-mac PRIVATE -Wno-deprecated-declarations)
+    target_link_libraries(artemis-mac PRIVATE artemis_deps
+        "-framework Cocoa" "-framework OpenGL")
 endif()

@@ -6,7 +6,8 @@
 #include <limits>
 #include <sstream>
 #if defined(ARTC_HAS_GLES)
-#include <GLES2/gl2.h>
+#include "render/gles2_headers.h"
+#include "render/shader_compat.h"
 #endif
 namespace artc {
 void LayerEffect::Set(const std::map<std::string,std::string>& attrs) {
@@ -99,7 +100,8 @@ uint32_t LayerShaders::Compile(const std::string& source,bool wrap) {
         fragment+="\n#undef main\nuniform lowp float artc_opacity;\nvoid main(){artc_game_main();gl_FragColor.a*=artc_opacity;gl_FragColor.rgb*=gl_FragColor.a;}\n";
     }
     auto shader=[](GLenum type,const std::string& code)->GLuint {
-        GLuint id=glCreateShader(type);const char* s=code.c_str();glShaderSource(id,1,&s,nullptr);glCompileShader(id);
+        const std::string adapted=ShaderSourceForBackend(code);
+        GLuint id=glCreateShader(type);const char* s=adapted.c_str();glShaderSource(id,1,&s,nullptr);glCompileShader(id);
         GLint ok=0;glGetShaderiv(id,GL_COMPILE_STATUS,&ok);
         if(!ok){char log[2048]={};glGetShaderInfoLog(id,sizeof(log),nullptr,log);
             Log(kLogError,std::string("layer shader compile: ")+log);glDeleteShader(id);return 0;}
