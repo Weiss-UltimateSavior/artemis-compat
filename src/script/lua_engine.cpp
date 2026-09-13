@@ -13,6 +13,7 @@
 #include "script/native_save.h"
 #include "script/save_storage.h"
 #include "script/save_metadata.h"
+#include "script/runtime_state.h"
 #include "util/encoding.h"
 #include <filesystem>
 #include "log/logger.h"
@@ -2758,6 +2759,9 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
             Log(kLogError,"load: unsupported saved layer command "+c.name);return false;
         }
     // Global/system banks belong to this installation, not to a scenario slot.
+    LoadPhase phase=LoadPhase::None;
+    auto advance=[&](LoadPhase next){ if(!ValidLoadTransition(phase,next)) Log(kLogWarn,std::string("load: phase order violated -> ")+LoadPhaseName(next)); phase=next; };
+    advance(LoadPhase::ResetEphemeral);
     for(auto it=vars_.begin();it!=vars_.end();) {
         const auto prefix=it->first.substr(0,2);
         if(prefix!="g." && prefix!="s.")it=vars_.erase(it);else ++it;
@@ -2766,11 +2770,13 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
         const auto prefix=v.first.substr(0,2);
         if(prefix!="g." && prefix!="s." && prefix!="t.")vars_[v.first]=std::move(v.second);
     }
+    advance(LoadPhase::RestoreData);
     tag_queue_.clear();SuspendWait();SetAutoMode(false);
     save_image_={};
     videos_.clear();emotes_.clear();audio_->StopAll();delete sounds_;sounds_=new AudioChannels(*audio_);
     onsoundfinish_.clear();pending_click_=false;drag_id_.clear();lyevents_.clear();
     if(script_runner_)script_runner_->DiscardFlow();
+    advance(LoadPhase::SnapshotScene);
     if(compositor_) {
         const int w=compositor_->StageWidth(),h=compositor_->StageHeight();
         compositor_->ReleaseGl();compositor_->Init(w,h);
@@ -2778,7 +2784,9 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
             DispatchTag(c.name,{c.attrs.begin(),c.attrs.end()});
     }
     // The registered framework callback reconstructs message pages, audio and
-    // the scenario cursor from its restored scr/log/btn graph (quickjump).
+    // the scenario cursor from its restored scr/log/btn graph (quickjump). [B]
+    // must run after [A] above or the replay would clobber it.
+    advance(LoadPhase::RebuildDerived);
     if(!CallEvent(handler->second,{{"file",file}},false)) return false;
     Log(kLogInfo,std::string("load: ")+(native?"native snapshot":"checkpoint")+" restored via onLoad: "+file+
         " layers="+std::to_string(snapshot.layers.size()));

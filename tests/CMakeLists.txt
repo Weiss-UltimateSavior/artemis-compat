@@ -65,6 +65,10 @@ add_executable(emote_timeline_regressions emote_timeline_regressions.cpp)
 target_link_libraries(emote_timeline_regressions PRIVATE artemis_core)
 add_test(NAME emote_timeline_regressions COMMAND emote_timeline_regressions)
 
+add_executable(runtime_state_regressions runtime_state_regressions.cpp)
+target_link_libraries(runtime_state_regressions PRIVATE artemis_core)
+add_test(NAME runtime_state_regressions COMMAND runtime_state_regressions)
+
 # Video decoding only when the core was built with FFmpeg and the tool is
 # available to synthesize a fixture.
 get_target_property(ARTC_DEFINES artemis_deps INTERFACE_COMPILE_DEFINITIONS)
