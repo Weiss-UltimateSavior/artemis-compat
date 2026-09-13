@@ -10,6 +10,7 @@ namespace artc {
 bool Pf8Reader::Open(const std::string &path, const std::vector<uint8_t> &key) {
     path_ = path;
     key_ = key;
+    encrypted_ = true;
     entries_.clear();
 
     FILE *fp = std::fopen(path.c_str(), "rb");
@@ -17,10 +18,19 @@ bool Pf8Reader::Open(const std::string &path, const std::vector<uint8_t> &key) {
 
     uint8_t header[11];
     if (std::fread(header, 1, sizeof(header), fp) != sizeof(header) ||
-        std::memcmp(header, "pf", 2) != 0 || header[2] != '8') {
+        std::memcmp(header, "pf", 2) != 0) {
         std::fclose(fp);
         return false;
     }
+    // '8' is the encrypted generation; '2'/'6' are the PF6-era layout, which
+    // stores data in the clear but keeps the same record table.
+    const char version = static_cast<char>(header[2]);
+    if (version != '8' && version != '2' && version != '6') {
+        std::fclose(fp);
+        return false;
+    }
+    encrypted_ = (version == '8');
+    if (!encrypted_) key_.clear(); // never XOR a clear-text container
     auto rd32 = [&](const uint8_t *p) -> uint32_t {
         return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
                (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
@@ -29,7 +39,7 @@ bool Pf8Reader::Open(const std::string &path, const std::vector<uint8_t> &key) {
     const uint32_t file_count = rd32(header + 7);
 
     // Auto key derivation: SHA1 over the hashed region [7, 7 + index_size).
-    if (key_.empty()) {
+    if (encrypted_ && key_.empty()) {
         std::vector<uint8_t> hashed(index_size);
         if (std::fseek(fp, 7, SEEK_SET) != 0 ||
             std::fread(hashed.data(), 1, hashed.size(), fp) != hashed.size()) {
@@ -83,22 +93,22 @@ bool Pf8Reader::Open(const std::string &path, const std::vector<uint8_t> &key) {
 }
 
 bool Pf8Reader::Find(const std::string &name, Pf8Entry &out) const {
+    // Case-insensitive, first record wins (original engine behavior).
+    const std::string want = NormalizeLookupKey(name);
     for (const Pf8Entry &e : entries_) {
-        if (e.name == name) { out = e; return true; }
-    }
-    const std::string want = NormalizePackName(name);
-    for (const Pf8Entry &e : entries_) {
-        if (NormalizePackName(e.name) == want) { out = e; return true; }
+        if (NormalizeLookupKey(e.name) == want) { out = e; return true; }
     }
     return false;
 }
 
-void Pf8Reader::Decrypt(uint8_t *data, size_t len) const {
+void Pf8Reader::DecryptRange(uint8_t *data, size_t len, uint64_t offset) const {
     if (key_.empty()) return; // passthrough when no key configured
     // Behavior note: the XOR phase restarts at each file's data start
     // (verified: files deep inside packs decrypt cleanly from phase 0).
+    // A range read starts mid-stream, so begin at the matching phase.
+    const size_t phase = static_cast<size_t>(offset % key_.size());
     for (size_t i = 0; i < len; ++i)
-        data[i] ^= key_[i % key_.size()];
+        data[i] ^= key_[(phase + i) % key_.size()];
 }
 
 bool Pf8Reader::Read(const Pf8Entry &e, std::vector<uint8_t> &out) const {
@@ -113,7 +123,28 @@ bool Pf8Reader::Read(const Pf8Entry &e, std::vector<uint8_t> &out) const {
     const size_t got = std::fread(out.data(), 1, e.size, fp);
     std::fclose(fp);
     if (got != e.size) return false;
-    Decrypt(out.data(), out.size());
+    DecryptRange(out.data(), out.size(), 0);
+    return true;
+}
+
+bool Pf8Reader::ReadRange(const Pf8Entry &e, uint64_t offset, size_t len,
+                          std::vector<uint8_t> &out) const {
+    out.clear();
+    if (e.offset == 0 || e.size == 0 || len == 0) return true;
+    if (offset >= e.size) return false;
+    const size_t avail = static_cast<size_t>(e.size - offset);
+    const size_t want = len < avail ? len : avail;
+    FILE *fp = std::fopen(path_.c_str(), "rb");
+    if (!fp) return false;
+    if (std::fseek(fp, static_cast<long>(e.offset + offset), SEEK_SET) != 0) {
+        std::fclose(fp);
+        return false;
+    }
+    out.resize(want);
+    const size_t got = std::fread(out.data(), 1, want, fp);
+    std::fclose(fp);
+    if (got != want) return false;
+    DecryptRange(out.data(), out.size(), offset);
     return true;
 }
 

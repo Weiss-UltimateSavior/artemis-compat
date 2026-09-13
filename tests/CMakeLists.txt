@@ -25,6 +25,10 @@ target_compile_definitions(audio_stream_regressions PRIVATE
 target_link_libraries(audio_stream_regressions PRIVATE artemis_core)
 add_test(NAME audio_stream_regressions COMMAND audio_stream_regressions)
 
+add_executable(pf8_regressions pf8_regressions.cpp)
+target_link_libraries(pf8_regressions PRIVATE artemis_core)
+add_test(NAME pf8_regressions COMMAND pf8_regressions)
+
 # Video decoding only when the core was built with FFmpeg and the tool is
 # available to synthesize a fixture.
 get_target_property(ARTC_DEFINES artemis_deps INTERFACE_COMPILE_DEFINITIONS)

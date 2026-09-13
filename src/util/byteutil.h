@@ -48,4 +48,13 @@ inline std::string NormalizePackName(const std::string &name) {
     return s;
 }
 
+// Lookup key for pack entries: separator-normalized and ASCII-lowercased.
+// The original engine treats entry names case-insensitively (first match wins).
+inline std::string NormalizeLookupKey(const std::string &name) {
+    std::string s = NormalizePackName(name);
+    for (char &c : s)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return s;
+}
+
 } // namespace artc

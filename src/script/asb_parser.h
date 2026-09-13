@@ -58,11 +58,16 @@ public:
     }
     const AsbLine &Current() const { return script_.lines[pc_]; }
     size_t CurrentIndex() const { return pc_; }
+    size_t Size() const { return script_.lines.size(); }
+    const std::string &CurrentFile() const { return current_file_; }
     void Advance() { if (++pc_ >= script_.lines.size()) halted_ = true; }
     // One native instruction. Lua may jump/call/return while the instruction
     // runs; do not retain references into the script or advance its new cursor.
     bool ExecuteLine(LuaEngine& lua);
     void JumpTo(const std::string &label);
+    // Jump to a compiled instruction index (the ASB branch/goto metadata
+    // stores these directly rather than source labels).
+    void GotoIndex(size_t index);
     void Halt() { halted_ = true; }
     // A load replaces the old scenario and any suspended menu/event frames.
     void DiscardFlow();

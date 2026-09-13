@@ -232,6 +232,13 @@ private:
     static int l_random(lua_State *L);
     static int l_getScriptStack(lua_State *L);
     static int l_getScriptWaitReason(lua_State *L);
+    static int l_getScriptStatus(lua_State *L);
+    static int l_setScriptStatus(lua_State *L);
+    static int l_getScriptSize(lua_State *L);
+    static int l_getFrameNumber(lua_State *L);
+    static int l_getTouchPoint(lua_State *L);
+    static int l_setFlickSensitivity(lua_State *L);
+    static int l_getScriptBlock(lua_State *L);
     static int l_lyevent(lua_State *L);
     bool PushGlobalFn(const std::string &fn, bool quiet);
     bool CallEvent(const std::string &fn,
@@ -342,6 +349,9 @@ private:
     int touch_count_ = 0;
     int debug_mode_ = 0;
     int debug_level_ = 0;
+    int script_status_ = 1;      // e:getScriptStatus / setScriptStatus
+    uint64_t frame_number_ = 0;  // e:getFrameNumber, bumped each frame
+    float flick_sensitivity_ = 0.f;
     std::chrono::steady_clock::time_point init_time_;
     std::chrono::steady_clock::time_point clock_pause_at_{};
     bool clock_paused_ = false;

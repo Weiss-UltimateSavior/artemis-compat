@@ -4,7 +4,8 @@
 // published algorithm and multiple game samples):
 //
 //   offset 0x00  char magic[2]     = "pf"
-//   offset 0x02  uint8  version    = '8'
+//   offset 0x02  uint8  version    = '8' (encrypted) | '2'/'6' (PF6 layout,
+//                                    unencrypted)
 //   offset 0x03  u32   index_size  (byte length of the hashed index region,
 //                                  counted from offset 7)
 //   offset 0x07  u32   file_count
@@ -18,7 +19,11 @@
 // Key derivation (version '8'):
 //   key = SHA1( file[7 : 7 + index_size] )        (20 bytes)
 // File data decryption: byte-wise XOR, key phase restarts at each file's
-// data start. Entries with offset == 0 are empty placeholders.
+// data start. Entries with offset == 0 are empty placeholders. Version '2'/'6'
+// keeps the same record layout but stores data in the clear (no key).
+//
+// Entry lookup is case-insensitive (ASCII fold) and the first matching record
+// wins, mirroring the original engine's historical behavior.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -42,6 +47,8 @@ public:
     uint32_t FileCount() const { return static_cast<uint32_t>(entries_.size()); }
     const std::string &Path() const { return path_; }
     const std::vector<uint8_t> &Key() const { return key_; }
+    // false for the unencrypted PF6-era '2'/'6' containers (no derived key).
+    bool Encrypted() const { return encrypted_; }
 
     // Case-insensitive-ish lookup: exact, then normalized-separator match.
     bool Find(const std::string &name, Pf8Entry &out) const;
@@ -50,11 +57,18 @@ public:
     bool Read(const Pf8Entry &e, std::vector<uint8_t> &out) const;
     bool Read(const std::string &name, std::vector<uint8_t> &out) const;
 
+    // Read `len` bytes starting at `offset` inside the entry, decrypting with
+    // the key phase that applies at that position. Used for streamed reads
+    // (movie/audio) without loading the whole entry.
+    bool ReadRange(const Pf8Entry &e, uint64_t offset, size_t len,
+                   std::vector<uint8_t> &out) const;
+
 private:
-    void Decrypt(uint8_t *data, size_t len) const;
+    void DecryptRange(uint8_t *data, size_t len, uint64_t offset) const;
 
     std::string path_;
     std::vector<uint8_t> key_;
+    bool encrypted_ = true;
     std::vector<Pf8Entry> entries_;
 };
 

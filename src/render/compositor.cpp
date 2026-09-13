@@ -194,60 +194,147 @@ std::string Compositor::HitLayer(float x, float y) const {
 // KrKr2-Next: tween engine (platform independent)
 // ---------------------------------------------------------------------------
 namespace {
-enum Ease { kEaseLinear = 0, kEaseInQuad, kEaseOutQuad, kEaseInOutQuad,
-            kEaseInCubic, kEaseOutCubic, kEaseInOutCubic, kEaseInSine,
-            kEaseOutSine, kEaseInOutSine, kEaseOutBack, kEaseOutBounce };
+// Artemis exposes 10 easing families (quad/cubic/quart/quint/expo/circ/sine/
+// back/elastic/bounce) in in/out/inout directions, plus linear. Encode a curve
+// as 1 + family*3 + direction so parsing and dispatch stay compact.
+enum EaseFamily { kFamQuad = 0, kFamCubic, kFamQuart, kFamQuint, kFamExpo,
+                  kFamCirc, kFamSine, kFamBack, kFamElastic, kFamBounce, kFamCount };
+enum EaseDir { kDirIn = 0, kDirOut, kDirInOut };
 
 int ParseEase(const std::string &name) {
-    if (name.empty() || name == "none" || name == "linear") return kEaseLinear;
-    if (name == "easein_quad") return kEaseInQuad;
-    if (name == "easeout_quad") return kEaseOutQuad;
-    if (name == "easeinout_quad") return kEaseInOutQuad;
-    if (name == "easein_cubic") return kEaseInCubic;
-    if (name == "easeout_cubic") return kEaseOutCubic;
-    if (name == "easeinout_cubic") return kEaseInOutCubic;
-    if (name == "easein_sine") return kEaseInSine;
-    if (name == "easeout_sine") return kEaseOutSine;
-    if (name == "easeinout_sine") return kEaseInOutSine;
-    if (name == "easeout_back") return kEaseOutBack;
-    if (name == "easeout_bounce") return kEaseOutBounce;
-    // unknown curve families (elastic, quart, expo...) fall back by direction
-    if (name.rfind("easein", 0) == 0 && name.find("out") == std::string::npos) return kEaseInQuad;
-    if (name.rfind("easeout", 0) == 0) return kEaseOutQuad;
-    return kEaseInOutQuad;
+    if (name.empty() || name == "none" || name == "linear") return 0;
+    std::string family = name;
+    int dir = kDirIn;
+    if (name.rfind("easeinout_", 0) == 0) { dir = kDirInOut; family = name.substr(10); }
+    else if (name.rfind("easein_", 0) == 0) { dir = kDirIn; family = name.substr(7); }
+    else if (name.rfind("easeout_", 0) == 0) { dir = kDirOut; family = name.substr(8); }
+    int fam = -1;
+    if (family == "quad") fam = kFamQuad;
+    else if (family == "cubic") fam = kFamCubic;
+    else if (family == "quart") fam = kFamQuart;
+    else if (family == "quint") fam = kFamQuint;
+    else if (family == "expo" || family == "exponential") fam = kFamExpo;
+    else if (family == "circ" || family == "circular") fam = kFamCirc;
+    else if (family == "sine" || family == "sin") fam = kFamSine;
+    else if (family == "back") fam = kFamBack;
+    else if (family == "elastic") fam = kFamElastic;
+    else if (family == "bounce") fam = kFamBounce;
+    if (fam < 0) return 0; // unknown -> linear
+    return 1 + fam * 3 + dir;
+}
+
+float OutBounce(float t) {
+    const float n1 = 7.5625f, d1 = 2.75f;
+    if (t < 1 / d1) return n1 * t * t;
+    if (t < 2 / d1) { t -= 1.5f / d1; return n1 * t * t + 0.75f; }
+    if (t < 2.5f / d1) { t -= 2.25f / d1; return n1 * t * t + 0.9375f; }
+    t -= 2.625f / d1; return n1 * t * t + 0.984375f;
+}
+
+float InBounce(float t) { return 1 - OutBounce(1 - t); }
+
+// In-direction curve for one family, in [0,1].
+float EaseIn(int fam, float t) {
+    const float pi = 3.14159265f;
+    switch (fam) {
+    case kFamQuad: return t * t;
+    case kFamCubic: return t * t * t;
+    case kFamQuart: return t * t * t * t;
+    case kFamQuint: { const float u = t * t; return u * u * t; }
+    case kFamExpo: return t <= 0 ? 0 : std::pow(2.0f, 10 * t - 10);
+    case kFamCirc: return 1 - std::sqrt(1 - t * t);
+    case kFamSine: return 1 - std::cos(t * pi / 2);
+    case kFamBack: { const float c1 = 1.70158f, c3 = c1 + 1; return c3 * t * t * t - c1 * t * t; }
+    case kFamElastic: {
+        if (t <= 0) return 0;
+        if (t >= 1) return 1;
+        const float c4 = (2 * pi) / 3;
+        return -std::pow(2.0f, 10 * t - 10) * std::sin((t * 10 - 10.75f) * c4);
+    }
+    case kFamBounce: return InBounce(t);
+    default: return t;
+    }
 }
 
 float ApplyEase(int ease, float t) {
     if (t <= 0) return 0;
     if (t >= 1) return 1;
+    if (ease <= 0) return t; // linear
+    const int fam = (ease - 1) / 3;
+    const int dir = (ease - 1) % 3;
+    if (dir == kDirIn) return EaseIn(fam, t);
+    if (dir == kDirOut) return 1 - EaseIn(fam, 1 - t);
+    // inout: back/elastic/bounce use a widened-parameter blend, the rest are
+    // the reflected in-curve across the midpoint.
     const float pi = 3.14159265f;
-    switch (ease) {
-    case kEaseInQuad: return t * t;
-    case kEaseOutQuad: return 1 - (1 - t) * (1 - t);
-    case kEaseInOutQuad: return t < 0.5f ? 2 * t * t : 1 - (-2 * t + 2) * (-2 * t + 2) / 2;
-    case kEaseInCubic: return t * t * t;
-    case kEaseOutCubic: { const float u = 1 - t; return 1 - u * u * u; }
-    case kEaseInOutCubic: return t < 0.5f ? 4 * t * t * t : 1 - (-2 * t + 2) * (-2 * t + 2) * (-2 * t + 2) / 2;
-    case kEaseInSine: return 1 - std::cos(t * pi / 2);
-    case kEaseOutSine: return std::sin(t * pi / 2);
-    case kEaseInOutSine: return -(std::cos(pi * t) - 1) / 2;
-    case kEaseOutBack: { const float c1 = 1.70158f, c3 = c1 + 1; const float u = t - 1;
-                         return 1 + c3 * u * u * u + c1 * u * u; }
-    case kEaseOutBounce: {
-        const float n1 = 7.5625f, d1 = 2.75f;
-        if (t < 1 / d1) return n1 * t * t;
-        if (t < 2 / d1) { t -= 1.5f / d1; return n1 * t * t + 0.75f; }
-        if (t < 2.5f / d1) { t -= 2.25f / d1; return n1 * t * t + 0.9375f; }
-        t -= 2.625f / d1; return n1 * t * t + 0.984375f;
+    if (fam == kFamBack) {
+        const float c1 = 1.70158f, c2 = c1 * 1.525f;
+        return t < 0.5f
+                   ? (std::pow(2 * t, 2) * ((c2 + 1) * 2 * t - c2)) / 2
+                   : (std::pow(2 * t - 2, 2) * ((c2 + 1) * (2 * t - 2) + c2) + 2) / 2;
     }
-    default: return t;
+    if (fam == kFamElastic) {
+        const float c5 = (2 * pi) / 4.5f;
+        return t < 0.5f
+                   ? -(std::pow(2.0f, 20 * t - 10) * std::sin((20 * t - 11.125f) * c5)) / 2
+                   : (std::pow(2.0f, -20 * t + 10) * std::sin((20 * t - 11.125f) * c5)) / 2 + 1;
     }
+    if (fam == kFamBounce)
+        return t < 0.5f ? (1 - InBounce(1 - 2 * t)) / 2
+                        : (1 + OutBounce(2 * t - 1)) / 2;
+    return t < 0.5f ? EaseIn(fam, t * 2) / 2
+                    : 1 - EaseIn(fam, (1 - t) * 2) / 2;
 }
 
 float ToF(const std::string &s, float def = 0) {
     try { return s.empty() ? def : std::stof(s); } catch (...) { return def; }
 }
 } // namespace
+
+bool Compositor::IsProhibitHead(uint32_t cp) const {
+    return prohibit_head_.empty() ? ProhibitLineStart(cp) : prohibit_head_.count(cp) != 0;
+}
+bool Compositor::IsProhibitFoot(uint32_t cp) const {
+    return prohibit_foot_.empty() ? ProhibitLineEnd(cp) : prohibit_foot_.count(cp) != 0;
+}
+bool Compositor::IsWordpart(uint32_t cp) const {
+    return wordparts_.count(cp) != 0;
+}
+
+namespace {
+std::vector<uint32_t> DecodeUtf8Codepoints(const std::string &s) {
+    std::vector<uint32_t> out;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        uint32_t cp = c;
+        size_t n = 1;
+        if (c >= 0xF0) { cp = c & 0x07; n = 4; }
+        else if (c >= 0xE0) { cp = c & 0x0F; n = 3; }
+        else if (c >= 0xC0) { cp = c & 0x1F; n = 2; }
+        for (size_t k = 1; k < n && i + k < s.size(); ++k)
+            cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        out.push_back(cp);
+        i += n;
+    }
+    return out;
+}
+} // namespace
+
+void Compositor::SetProhibitRules(const std::string &head, const std::string &foot) {
+    prohibit_head_.clear();
+    prohibit_foot_.clear();
+    for (uint32_t cp : DecodeUtf8Codepoints(head)) prohibit_head_.insert(cp);
+    for (uint32_t cp : DecodeUtf8Codepoints(foot)) prohibit_foot_.insert(cp);
+}
+void Compositor::SetWordparts(const std::string &parts) {
+    wordparts_.clear();
+    for (uint32_t cp : DecodeUtf8Codepoints(parts)) wordparts_.insert(cp);
+}
+void Compositor::SetIndentRules(const std::string &pair, int range, bool nest) {
+    indent_pair_ = pair;
+    indent_range_ = range;
+    indent_nest_ = nest;
+}
 
 void Compositor::SetTextTween(const std::string& id, const std::map<std::string, std::string>& attrs) {
     if (id.empty()) return;
@@ -1008,8 +1095,9 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
         // Keep an opening bracket with its following text, and a closing
         // mark with the preceding text. Ruby remains one indivisible unit.
         while(prohibit && end<units.size() && cps[units[end].first]!='\n' &&
-              (ProhibitLineEnd(cps[units[end-1].last-1]) ||
-               (ProhibitLineStart(cps[units[end].first]) && !(hung && HangPunctuation(cps[units[end].first]))))) {
+              (IsProhibitFoot(cps[units[end-1].last-1]) ||
+               IsWordpart(cps[units[end-1].last-1]) && IsWordpart(cps[units[end].first]) ||
+               (IsProhibitHead(cps[units[end].first]) && !(hung && HangPunctuation(cps[units[end].first]))))) {
             width+=units[end].width;++end;
         }
         if(pen>0 && wrapWidth>0 && pen+width>wrapWidth && !(hung && HangPunctuation(cps[k]))) {

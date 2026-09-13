@@ -75,6 +75,11 @@ public:
     // Tag handlers (called from the Lua bridge on the engine thread).
     void SetPackManager(PackManager *packs) { packs_ = packs; }
     void SetSaveDirectory(const std::string& directory) { save_directory_=directory; }
+    // [prohibit]/[wordparts]/[indent]: configure CJK line-break rules. Empty
+    // sets fall back to the documented defaults.
+    void SetProhibitRules(const std::string& head, const std::string& foot);
+    void SetWordparts(const std::string& parts);
+    void SetIndentRules(const std::string& pair, int range, bool nest);
     bool LoadImage(const std::string &id, const std::string &file);
     bool LoadShader(const std::string& id, const std::string& file);
     bool SetPixels(const std::string& id, const uint8_t* rgba, int width, int height);
@@ -242,6 +247,9 @@ private:
     void QueueTween(Tween tw, bool replace);
     static double TextEnd(const Layer& layer);
     void SetGlyphTimes(Layer& layer, std::vector<TextGlyph>& glyphs, const std::string& text);
+    bool IsProhibitHead(uint32_t cp) const;
+    bool IsProhibitFoot(uint32_t cp) const;
+    bool IsWordpart(uint32_t cp) const;
 
     int stage_w_ = 1280, stage_h_ = 720;
     LayerShaders shaders_;
@@ -252,6 +260,12 @@ private:
     GlProgram prog_{};
     TransProgram tprog_{};
     bool gl_ready_ = false;
+
+    // [prohibit]/[wordparts]/[indent] configuration (empty = documented default)
+    std::set<uint32_t> prohibit_head_, prohibit_foot_, wordparts_;
+    std::string indent_pair_;
+    int indent_range_ = -1;
+    bool indent_nest_ = false;
 
     std::vector<Tween> tweens_;
     bool collecting_tweens_ = false;

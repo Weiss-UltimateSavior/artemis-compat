@@ -16,6 +16,8 @@
 #include "log/logger.h"
 
 #include <cstring>
+#include <cctype>
+#include <cstdint>
 #include <new>       // placement new for the E-mote proxy userdata
 #include <chrono>
 #include <cmath>
@@ -558,6 +560,7 @@ void LuaEngine::EndFrame() {
 }
 
 bool LuaEngine::RunEnterFrame() {
+    ++frame_number_;
     advanced_this_frame_ = false;
     if (sounds_) sounds_->Update(NowMs());
     UpdateVideos();
@@ -659,6 +662,13 @@ bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
         {"lyevent", l_lyevent},
         {"getScriptStack", l_getScriptStack},
         {"getScriptWaitReason", l_getScriptWaitReason},
+        {"getScriptStatus", l_getScriptStatus},
+        {"setScriptStatus", l_setScriptStatus},
+        {"getScriptSize", l_getScriptSize},
+        {"getFrameNumber", l_getFrameNumber},
+        {"getTouchPoint", l_getTouchPoint},
+        {"setFlickSensitivity", l_setFlickSensitivity},
+        {"getScriptBlock", l_getScriptBlock},
         {"bindSurface", l_noop},
         {"clearSurfaceLoadQueue", l_noop},
         // KrKr2-Next: surface cache release is a no-op without a surface
@@ -729,6 +739,98 @@ bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
 }
 
 // e:tag{ "tagname", key=value, ... } — M0: log + implement `var` and `debug`.
+// ---- var system= helpers (arithmetic on byte strings + UTF-8 modes) --------
+int Utf8Length(const std::string &s) {
+    int n = 0;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        i += c < 0x80 ? 1 : (c < 0xE0 ? 2 : (c < 0xF0 ? 3 : 4));
+        ++n;
+    }
+    return n;
+}
+
+std::string Utf8Substr(const std::string &s, size_t position, size_t length) {
+    size_t i = 0, start = s.size();
+    for (size_t cp = 0; cp < position && i < s.size(); ++cp) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        i += c < 0x80 ? 1 : (c < 0xE0 ? 2 : (c < 0xF0 ? 3 : 4));
+    }
+    start = i;
+    for (size_t cp = 0; cp < length && i < s.size(); ++cp) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        i += c < 0x80 ? 1 : (c < 0xE0 ? 2 : (c < 0xF0 ? 3 : 4));
+    }
+    return start <= i ? s.substr(start, i - start) : std::string();
+}
+
+std::string Base64Encode(const std::string &in) {
+    static const char *tbl =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((in.size() + 2) / 3 * 4);
+    for (size_t i = 0; i < in.size(); i += 3) {
+        const uint32_t b0 = static_cast<unsigned char>(in[i]);
+        const uint32_t b1 = i + 1 < in.size() ? static_cast<unsigned char>(in[i + 1]) : 0;
+        const uint32_t b2 = i + 2 < in.size() ? static_cast<unsigned char>(in[i + 2]) : 0;
+        const uint32_t v = (b0 << 16) | (b1 << 8) | b2;
+        out += tbl[(v >> 18) & 63];
+        out += tbl[(v >> 12) & 63];
+        out += i + 1 < in.size() ? tbl[(v >> 6) & 63] : '=';
+        out += i + 2 < in.size() ? tbl[v & 63] : '=';
+    }
+    return out;
+}
+
+std::string UrlEncode(const std::string &in) {
+    static const char *hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char b : in) {
+        if (std::isalnum(b) || b == '-' || b == '_' || b == '.' || b == '~') {
+            out += static_cast<char>(b);
+        } else {
+            out += '%';
+            out += hex[b >> 4];
+            out += hex[b & 15];
+        }
+    }
+    return out;
+}
+
+std::string UrlDecode(const std::string &in) {
+    std::string out;
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '%' && i + 2 < in.size()) {
+            auto nib = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            const int hi = nib(in[i + 1]), lo = nib(in[i + 2]);
+            if (hi >= 0 && lo >= 0) { out += static_cast<char>(hi * 16 + lo); i += 2; continue; }
+        }
+        out += in[i] == '+' ? ' ' : in[i];
+    }
+    return out;
+}
+
+// split `source` on `delimiter`, honouring a single-character escape.
+std::vector<std::string> SplitEscaped(const std::string &source, const std::string &delimiter,
+                                      const std::string &escape) {
+    std::vector<std::string> parts;
+    const char delim = delimiter.empty() ? ',' : delimiter[0];
+    const char esc = escape.empty() ? '\\' : escape[0];
+    std::string cur;
+    for (size_t i = 0; i < source.size(); ++i) {
+        if (source[i] == esc && i + 1 < source.size()) { cur += source[++i]; }
+        else if (source[i] == delim) { parts.push_back(cur); cur.clear(); }
+        else cur += source[i];
+    }
+    parts.push_back(cur);
+    return parts;
+}
+
 int LuaEngine::l_tag(lua_State *L) {
     LuaEngine *self = Self(L);
     if (!lua_istable(L, 2)) return 0;
@@ -758,9 +860,88 @@ int LuaEngine::l_tag(lua_State *L) {
         lua_getfield(L, 2, "system");
         const char *sys = lua_tostring(L, -1);
         if (name && sys) {
-            if (std::string(sys) == "delete") {
-                self->vars_.erase(name);
-            } else if (std::string(sys) == "date") {
+            auto field = [&](const char *k) -> std::string {
+                lua_getfield(L, 2, k);
+                const char *s = lua_tostring(L, -1);
+                std::string r = s ? s : "";
+                lua_pop(L, 1);
+                return r;
+            };
+            auto rfield = [&](const char *k) -> std::string {
+                return self->ResolveValue(field(k));
+            };
+            const std::string S(sys);
+            if (S == "delete") {
+                if (std::string(name).empty()) self->vars_.clear();
+                else self->vars_.erase(name);
+            } else if (S == "var_exist") {
+                const std::string target = field("target");
+                const bool exists = self->vars_.count(target) || self->sysvals_.count(target);
+                self->vars_[name] = exists ? "1" : "0";
+            } else if (S == "random") {
+                const long long mn = rfield("min").empty() ? 0 : std::strtoll(rfield("min").c_str(), nullptr, 0);
+                const std::string max_s = rfield("max");
+                const long long mx = max_s.empty() ? INT64_MAX : std::strtoll(max_s.c_str(), nullptr, 0);
+                long long v = mn;
+                if (mx > mn) v = mn + (static_cast<long long>(rand()) % (mx - mn + 1));
+                self->vars_[name] = std::to_string(v);
+            } else if (S == "length") {
+                const std::string src = rfield("source");
+                self->vars_[name] = std::to_string(field("mode") == "1"
+                                                       ? Utf8Length(src)
+                                                       : static_cast<int>(src.size()));
+            } else if (S == "find") {
+                const std::string src = rfield("source");
+                const std::string needle = rfield("string");
+                const size_t pos = src.find(needle);
+                self->vars_[name] = std::to_string(pos == std::string::npos ? -1
+                                                                               : static_cast<long long>(pos));
+            } else if (S == "substr") {
+                const std::string src = rfield("source");
+                const long long pos = std::strtoll(rfield("position").c_str(), nullptr, 0);
+                const std::string len_s = rfield("length");
+                const long long len = len_s.empty() ? static_cast<long long>(src.size())
+                                                    : std::strtoll(len_s.c_str(), nullptr, 0);
+                if (field("mode") == "1") {
+                    self->vars_[name] = Utf8Substr(src, pos < 0 ? 0 : static_cast<size_t>(pos),
+                                                   len < 0 ? 0 : static_cast<size_t>(len));
+                } else {
+                    const size_t start = pos < 0 ? 0 : std::min<size_t>(pos, src.size());
+                    const size_t end = std::min<size_t>(start + (len < 0 ? 0 : len), src.size());
+                    self->vars_[name] = src.substr(start, end - start);
+                }
+            } else if (S == "explode") {
+                const auto parts = SplitEscaped(rfield("source"), field("delimiter"), field("escape"));
+                for (size_t i = 0; i < parts.size(); ++i)
+                    self->vars_[std::string(name) + "." + std::to_string(i)] = parts[i];
+                self->vars_[std::string(name) + ".size"] = std::to_string(parts.size());
+            } else if (S == "unixtime") {
+                self->vars_[name] = std::to_string(static_cast<long long>(std::time(nullptr)));
+            } else if (S == "base64_encode") {
+                self->vars_[name] = Base64Encode(rfield("source"));
+            } else if (S == "url_encode") {
+                self->vars_[name] = UrlEncode(rfield("source"));
+            } else if (S == "url_decode") {
+                self->vars_[name] = UrlDecode(rfield("source"));
+            } else if (S == "fullscreen" || S == "minimize") {
+                self->vars_[name] = "0";
+            } else if (S == "screen_width") {
+                self->vars_[name] = self->sysvals_.count("screen_width")
+                                        ? self->sysvals_["screen_width"] : "1280";
+            } else if (S == "screen_height") {
+                self->vars_[name] = self->sysvals_.count("screen_height")
+                                        ? self->sysvals_["screen_height"] : "720";
+            } else if (S == "file_exist" || S == "file_exists") {
+                const std::string file = rfield("file");
+                bool exists = false;
+                if (file.size() >= 4) {
+                    std::string low = file;
+                    for (char &c : low) c = static_cast<char>(std::tolower((unsigned char)c));
+                    exists = low.compare(low.size() - 4, 4, ".exe") == 0;
+                }
+                if (!exists && self->packs_) exists = self->packs_->Exists(file);
+                self->vars_[name] = exists ? "1" : "0";
+            } else if (S == "date") {
                 // Save metadata reads six dotted calendar fields, not a Unix
                 // timestamp or the literal string "date". Use local wall time
                 // independently of the pausable monotonic animation clock.
@@ -815,6 +996,35 @@ int LuaEngine::l_tag(lua_State *L) {
         const int h = static_cast<int>(lua_tointeger(L, -1));
         if (h > 0) self->msg_layer_height_ = h;
         lua_pop(L, 1);
+    }
+    if (tagname == "prohibit") {
+        lua_getfield(L, 2, "head");
+        const char *head = lua_tostring(L, -1);
+        lua_getfield(L, 2, "foot");
+        const char *foot = lua_tostring(L, -1);
+        if (self->compositor_)
+            self->compositor_->SetProhibitRules(head ? head : "", foot ? foot : "");
+        lua_pop(L, 2);
+        return 0;
+    }
+    if (tagname == "wordparts") {
+        lua_getfield(L, 2, "parts");
+        const char *parts = lua_tostring(L, -1);
+        if (self->compositor_) self->compositor_->SetWordparts(parts ? parts : "");
+        lua_pop(L, 1);
+        return 0;
+    }
+    if (tagname == "indent") {
+        lua_getfield(L, 2, "pair");
+        const char *pair = lua_tostring(L, -1);
+        lua_getfield(L, 2, "range");
+        const int range = lua_isnil(L, -1) ? -1 : static_cast<int>(lua_tointeger(L, -1));
+        lua_getfield(L, 2, "nest");
+        const bool nest = lua_tointeger(L, -1) != 0;
+        if (self->compositor_)
+            self->compositor_->SetIndentRules(pair ? pair : "", range, nest);
+        lua_pop(L, 3);
+        return 0;
     }
     if (tagname == "debug") {
         lua_getfield(L, 2, "mode");
@@ -2416,6 +2626,59 @@ int LuaEngine::l_random(lua_State *L) {
     // `t[ch]` in sysvo.lua was nil and START on the title screen aborted with
     // "attempt to index field '?'".
     lua_pushinteger(L, static_cast<lua_Integer>(rand()));
+    return 1;
+}
+
+// e:getScriptStatus() — 0..14 running/waiting state the framework polls.
+int LuaEngine::l_getScriptStatus(lua_State *L) {
+    LuaEngine *self = Self(L);
+    lua_pushinteger(L, self ? self->script_status_ : 0);
+    return 1;
+}
+
+int LuaEngine::l_setScriptStatus(lua_State *L) {
+    LuaEngine *self = Self(L);
+    if (self) self->script_status_ = static_cast<int>(luaL_checkinteger(L, 2));
+    return 0;
+}
+
+int LuaEngine::l_getScriptSize(lua_State *L) {
+    LuaEngine *self = Self(L);
+    const size_t size = self && self->script_runner_ ? self->script_runner_->Size() : 0;
+    lua_pushinteger(L, static_cast<lua_Integer>(size));
+    return 1;
+}
+
+int LuaEngine::l_getFrameNumber(lua_State *L) {
+    LuaEngine *self = Self(L);
+    lua_pushinteger(L, static_cast<lua_Integer>(self ? self->frame_number_ : 0));
+    return 1;
+}
+
+int LuaEngine::l_getTouchPoint(lua_State *L) {
+    LuaEngine *self = Self(L);
+    lua_pushnumber(L, self ? self->mouse_x_ : 0);
+    lua_pushnumber(L, self ? self->mouse_y_ : 0);
+    return 2;
+}
+
+int LuaEngine::l_setFlickSensitivity(lua_State *L) {
+    LuaEngine *self = Self(L);
+    if (self && lua_isnumber(L, 2))
+        self->flick_sensitivity_ = static_cast<float>(lua_tonumber(L, 2));
+    return 0;
+}
+
+// e:getScriptBlock() — describes the running script block. The framework uses
+// it for bookkeeping; expose the current file (empty when no runner).
+int LuaEngine::l_getScriptBlock(lua_State *L) {
+    LuaEngine *self = Self(L);
+    lua_newtable(L);
+    if (self && self->script_runner_) {
+        const std::string &file = self->script_runner_->CurrentFile();
+        lua_pushlstring(L, file.data(), file.size());
+        lua_setfield(L, -2, "file");
+    }
     return 1;
 }
 
