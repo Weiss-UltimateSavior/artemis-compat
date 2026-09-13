@@ -1022,10 +1022,19 @@ int LuaEngine::l_tag(lua_State *L) {
                     const auto info = self->compositor_->GetLayerInfo(lid);
                     if (info.found) {
                         const std::string nm(name);
+                        // The framework reads <name>.left/.top/.width/.height
+                        // (e.g. getTabletPos: e:var("t.ly.left")). Store the
+                        // bare name too for older callers.
                         self->vars_[nm] = std::to_string((int)info.left);
-                        // width/height are queried too (percent base)
+                        self->vars_[nm + ".left"] = std::to_string((int)info.left);
+                        self->vars_[nm + ".top"] = std::to_string((int)info.top);
                         self->vars_[nm + ".width"] = std::to_string((int)info.width);
                         self->vars_[nm + ".height"] = std::to_string((int)info.height);
+                        if (std::string(lid).find("zmask") != std::string::npos ||
+                            std::string(lid).find(".mw.tb") != std::string::npos)
+                            Log(kLogInfo, std::string("layer_info: ") + lid + " left=" +
+                                              std::to_string((int)info.left) + " width=" +
+                                              std::to_string((int)info.width));
                     }
                 }
             } else {
