@@ -338,6 +338,10 @@ private:
     std::map<std::string, std::map<std::string, std::string>> font_of_;
     std::map<std::string, std::string> font_main_;   // widest visible area
     std::map<std::string, std::string> font_name_;   // small visible area
+    std::map<std::string, std::string> font_defaults_; // [fontdefault]
+    std::map<std::string, std::string> glyph_config_;  // [glyph] click-wait icon
+    bool link_active_ = false, link_enabled_ = true;   // [link]/[linkdisable]
+    std::string link_file_, link_label_;
     std::chrono::steady_clock::time_point wait_until_;
     std::set<std::string> seen_tags_;                   // first-occurrence tag trace
     int msg_layer_height_ = 50;                     // font tag height → get_message_layer_height

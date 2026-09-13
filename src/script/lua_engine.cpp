@@ -1602,12 +1602,15 @@ int LuaEngine::l_tag(lua_State *L) {
         // rasterizes `data` into the selected layer (engine-side text).
         // Accumulate the page, retaining explicit line breaks and layer style.
         if (tagname == "font" && inst) {
+            // [fontdefault] supplies fallbacks for any attribute the tag omits.
+            std::map<std::string, std::string> merged = inst->font_defaults_;
+            for (const auto &kv : m) merged[kv.first] = kv.second;
             // Load the face once. The tag restyles the CURRENT chgmsg layer;
             // fonts with show=none belong to hidden/off-screen slots (e.g.
             // top=-5 measure slots) and must never become the visible layout.
             if (!inst->font_loaded_) {
-                auto face = m.find("face");
-                if (face != m.end()) {
+                auto face = merged.find("face");
+                if (face != merged.end()) {
                     inst->compositor_->SetPackManager(inst->packs_);
                     if (inst->compositor_->LoadFont(
                             inst->ResolvePackPath(face->second)))
@@ -1615,16 +1618,49 @@ int LuaEngine::l_tag(lua_State *L) {
                 }
             }
             if (!inst->msg_layer_.empty())
-                for (const auto& kv : m) inst->font_of_[inst->msg_layer_][kv.first] = kv.second;
-            auto hidden = m.find("show");
-            if (hidden != m.end() && hidden->second == "none") return 0;
+                for (const auto& kv : merged) inst->font_of_[inst->msg_layer_][kv.first] = kv.second;
+            auto hidden = merged.find("show");
+            if (hidden != merged.end() && hidden->second == "none") return 0;
             auto &slot = [&]() -> std::map<std::string, std::string> & {
-                auto w = m.find("width");
-                return (w != m.end() && std::atof(w->second.c_str()) >= 700)
+                auto w = merged.find("width");
+                return (w != merged.end() && std::atof(w->second.c_str()) >= 700)
                            ? inst->font_main_
                            : inst->font_name_;
             }();
-            slot = {m.begin(), m.end()};
+            slot = merged;
+            return 0;
+        }
+        if (tagname == "fontdefault" && inst) {
+            inst->font_defaults_ = {m.begin(), m.end()};
+            return 0;
+        }
+        if (tagname == "fontinit" && inst) {
+            inst->font_defaults_.clear();
+            inst->font_of_.clear();
+            inst->font_main_.clear();
+            inst->font_name_.clear();
+            return 0;
+        }
+        if (tagname == "font_close" && inst) {
+            if (!inst->msg_layer_.empty()) inst->font_of_.erase(inst->msg_layer_);
+            return 0;
+        }
+        if (tagname == "glyph" && inst) {
+            inst->glyph_config_ = {m.begin(), m.end()};
+            return 0;
+        }
+        if (tagname == "link" && inst) {
+            inst->link_active_ = true;
+            inst->link_enabled_ = true;
+            inst->link_file_ = m.count("file") ? m["file"] : std::string();
+            inst->link_label_ = m.count("label") ? m["label"] : std::string();
+            return 0;
+        }
+        if (tagname == "/link" && inst) { inst->link_active_ = false; return 0; }
+        if (tagname == "linkdisable" && inst) { inst->link_enabled_ = false; return 0; }
+        if (tagname == "linkenable" && inst) { inst->link_enabled_ = true; return 0; }
+        if (tagname == "lydrag" && inst && inst->compositor_ && m.count("id")) {
+            inst->compositor_->SetProps(m["id"], {{"draggable", "1"}});
             return 0;
         }
         if (tagname == "chgmsg" && inst) {
@@ -2225,6 +2261,15 @@ void LuaEngine::DispatchClick(float x, float y) {
     if (id.empty()) id = compositor_->HitLayer(x, y);
     Log(kLogInfo, "click: hit='" + id + "' registered=" +
                       (FindLayerEvent(id, "click", nullptr) ? "yes" : "no"));
+    // [link] message text: clicking the message layer follows the link.
+    if (link_active_ && link_enabled_ && !msg_layer_.empty() && !link_label_.empty() &&
+        (id == msg_layer_ || id.rfind(msg_layer_ + ".", 0) == 0)) {
+        const std::string file = !link_file_.empty()
+            ? link_file_
+            : (script_runner_ ? script_runner_->CurrentFile() : std::string());
+        if (jump_handler_) jump_handler_(file, link_label_);
+        return;
+    }
     std::vector<std::pair<std::string, std::string>> attrs;
     if (id.empty() || !FindLayerEvent(id, "click", &attrs)) {
         if (onpush_.count(1)) FireOnPush(1);

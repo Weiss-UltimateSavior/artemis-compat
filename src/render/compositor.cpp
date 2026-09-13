@@ -1153,10 +1153,21 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
         units.push_back({k,end,group ? group->width : advances[k],group});k=end;
     }
     const bool prohibit=number("prohibit",0)!=0, hung=number("hung",0)!=0;
-    int pen = 0, line = 0;
+    // [indent] hanging indent: an opening pair character shifts following
+    // (wrapped or explicit) lines to its right edge until the matching close.
+    const std::vector<uint32_t> indent_pairs=DecodeUtf8Codepoints(indent_pair_);
+    auto indent_open=[&](uint32_t cp,uint32_t* close)->bool {
+        if(indent_pairs.size()<2)return false;
+        for(size_t i=0;i+1<indent_pairs.size();i+=2)
+            if(indent_pairs[i]==cp){*close=indent_pairs[i+1];return true;}
+        return false;
+    };
+    int pen = 0, line = 0, indent_x = 0;
+    int chars_in_line = 0;
+    std::vector<std::pair<uint32_t,int>> indent_stack; // {expected close, prior indent}
     for(size_t u=0;u<units.size();) {
         const size_t k=units[u].first;
-        if(cps[k]=='\n') {lx[k]=-1;pen=0;++line;line_w.push_back(0);++u;continue;}
+        if(cps[k]=='\n') {lx[k]=-1;pen=indent_x;++line;line_w.push_back(0);chars_in_line=0;++u;continue;}
         size_t end=u+1;int width=units[u].width;
         // Keep an opening bracket with its following text, and a closing
         // mark with the preceding text. Ruby remains one indivisible unit.
@@ -1167,7 +1178,7 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
             width+=units[end].width;++end;
         }
         if(pen>0 && wrapWidth>0 && pen+width>wrapWidth && !(hung && HangPunctuation(cps[k]))) {
-            pen=0;++line;line_w.push_back(0);
+            pen=indent_x;++line;line_w.push_back(0);chars_in_line=0;
         }
         for(;u<end;++u) {
             const auto& unit=units[u];
@@ -1182,8 +1193,22 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
               for(size_t j=group->glyph_first;j<group->glyph_last;++j) {
                   lx[j]=ruby_pen; ly[j]=line; ruby_pen+=advances[j];
               }
+              chars_in_line+=static_cast<int>(group->last-group->first);
             } else {
               lx[unit.first]=pen;ly[unit.first]=line;
+              const uint32_t base_cp=cps[unit.first];
+              uint32_t close=0;
+              if(indent_open(base_cp,&close)) {
+                  const bool within=indent_range_<0 || chars_in_line<indent_range_;
+                  if(within && (indent_stack.empty() || indent_nest_)) {
+                      indent_stack.push_back({close,indent_x});
+                      indent_x=pen+advances[unit.first];
+                  }
+              } else if(!indent_stack.empty() && indent_stack.back().first==base_cp) {
+                  indent_x=indent_stack.back().second;
+                  indent_stack.pop_back();
+              }
+              ++chars_in_line;
             }
             pen+=unit.width;line_w[line]=std::max(line_w[line],pen);
         }
