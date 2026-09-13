@@ -226,7 +226,7 @@ struct Engine {
             } else {
                 lua->PushKeyUp(kKeyTap);
                 touch = 0;
-                const bool dragging = lua->DragActive();
+                const bool dragging = lua->DragMoved();
                 lua->EndDrag();
                 if (!dragging) { tapped = true; tap_x = sx; tap_y = sy; }
             }

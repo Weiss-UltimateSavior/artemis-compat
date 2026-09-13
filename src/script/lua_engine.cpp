@@ -555,7 +555,7 @@ void LuaEngine::ResumeAudio() { if (audio_) audio_->ResumeAll(); }
 void LuaEngine::PushKeyDown(int key) { input_.Press(key); }
 void LuaEngine::PushKeyUp(int key) { input_.Release(key); }
 
-void LuaEngine::SetMousePoint(float x, float y) { mouse_x_ = x; mouse_y_ = y; }
+void LuaEngine::SetMousePoint(float x, float y) { mouse_x_ = x; mouse_y_ = y; HoverMove(x, y); }
 void LuaEngine::SetTouchCount(int count) { touch_count_ = count; }
 
 void LuaEngine::EndFrame() {
@@ -2375,6 +2375,31 @@ void LuaEngine::FireOnPush(int key) {
 
 // ---- draggable layers (framework slider pins) ----
 
+// Hover model: the topmost layer under the pointer that owns a rollover event
+// gets its `over`/`function` handler; the previous layer gets its rollout
+// handler. The tablet dock arms its slide from tab_over, so a pointer entering
+// the handle must dispatch rollover or the bar never opens.
+void LuaEngine::HoverMove(float x, float y) {
+    if (!compositor_) return;
+    std::string id;
+    for (const std::string &cand : compositor_->HitLayers(x, y))
+        if (FindLayerEvent(cand, "rollover", nullptr)) { id = cand; break; }
+    if (id == hover_id_) return;
+    auto fire = [&](const std::string &layer, const char *type, const char *alias) {
+        std::vector<std::pair<std::string, std::string>> attrs;
+        if (layer.empty() || !FindLayerEvent(layer, type, &attrs)) return;
+        for (const auto &kv : attrs)
+            if ((kv.first == "function" || kv.first == alias) && !kv.second.empty()) {
+                Log(kLogInfo, std::string("hover: ") + type + " " + layer + " -> " + kv.second);
+                CallEvent(kv.second, attrs, true);
+                break;
+            }
+    };
+    if (!hover_id_.empty()) fire(hover_id_, "rollout", "out");
+    hover_id_ = id;
+    if (!id.empty()) fire(id, "rollover", "over");
+}
+
 // key-1 down over a draggable layer: record the grab and fire dragin.
 void LuaEngine::BeginDrag(float x, float y) {
     if (drag_id_.empty() && compositor_) {
@@ -2382,6 +2407,7 @@ void LuaEngine::BeginDrag(float x, float y) {
         const auto info = compositor_->GetLayerInfo(id);
         if (info.found && info.draggable) {
             drag_id_ = id;
+            drag_moved_ = false;
             drag_origin_x_ = x; drag_origin_y_ = y;
             drag_off_x_ = info.left; drag_off_y_ = info.top;
             Log(kLogInfo, "drag: begin " + id + " off=" +
@@ -2402,6 +2428,7 @@ void LuaEngine::BeginDrag(float x, float y) {
 // the drag handler (slider_dragX reads get_layer_info → percent → p4).
 void LuaEngine::DragMove(float x, float y) {
     if (drag_id_.empty() || !compositor_) return;
+    drag_moved_ = true;
     const auto info = compositor_->GetLayerInfo(drag_id_);
     if (!info.found) { EndDrag(); return; }
     float dx, dy;

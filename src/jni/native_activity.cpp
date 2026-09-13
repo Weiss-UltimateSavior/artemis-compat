@@ -424,7 +424,7 @@ void EngineThreadMain(ANativeActivity *activity) {
                         } else {
                             g_state.lua->PushKeyUp(1);
                             touch_count = 0;
-                            was_dragging = g_state.lua->DragActive();
+                            was_dragging = g_state.lua->DragMoved();
                             g_state.lua->EndDrag();
                             if (!was_dragging) {   // a clean tap, not a drag
                                 tapped = true;

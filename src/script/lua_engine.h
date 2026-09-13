@@ -131,6 +131,9 @@ public:
     // true while the pointer is down and a draggable layer was grabbed — the
     // following up must not fall through to ClickAt (button activation).
     bool DragActive() const { return !drag_id_.empty(); }
+    // True once the pointer actually moved during the grab. A zero-move grab is
+    // a click on a draggable layer and must still dispatch a click.
+    bool DragMoved() const { return drag_moved_; }
 
     // Locate the lyevent attr table for (layer, event type), walking up the
     // id hierarchy. With out==null only reports existence.
@@ -289,6 +292,9 @@ private:
     // drag_origin_ = pointer stage pos at press; drag_off_ = layer's stored
     // left/top offset at press (dragarea-relative).
     std::string drag_id_;
+    bool drag_moved_ = false;
+    std::string hover_id_;   // topmost rollover-owning layer under the pointer
+    void HoverMove(float x, float y);
     float drag_origin_x_ = 0, drag_origin_y_ = 0;
     float drag_off_x_ = 0, drag_off_y_ = 0;
     bool waiting_ = false;                              // click-wait gating
