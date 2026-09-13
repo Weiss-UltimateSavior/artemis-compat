@@ -33,6 +33,10 @@ add_executable(preprocess_regressions preprocess_regressions.cpp)
 target_link_libraries(preprocess_regressions PRIVATE artemis_core)
 add_test(NAME preprocess_regressions COMMAND preprocess_regressions)
 
+add_executable(psb_encrypted_regressions psb_encrypted_regressions.cpp)
+target_link_libraries(psb_encrypted_regressions PRIVATE artemis_core)
+add_test(NAME psb_encrypted_regressions COMMAND psb_encrypted_regressions)
+
 # Video decoding only when the core was built with FFmpeg and the tool is
 # available to synthesize a fixture.
 get_target_property(ARTC_DEFINES artemis_deps INTERFACE_COMPILE_DEFINITIONS)

@@ -18,6 +18,22 @@ bool PsbDocument::ReadResource(const PsbValue& ref,std::vector<uint8_t>& out) co
 }
 namespace {
 constexpr size_t MaxBytes=256*1024*1024, MaxItems=1024*1024, MaxDepth=128;
+// PSB stream cipher constants (header key derivation).
+constexpr uint32_t kKey1=123456789u, kKey2=362436069u, kKey3=521288629u;
+struct PsbCipher {
+    uint32_t key1=kKey1,key2=kKey2,key3=kKey3,key4=0,current=0;
+    explicit PsbCipher(uint32_t k4):key4(k4){}
+    void Apply(uint8_t* data,size_t len) {
+        for(size_t i=0;i<len;++i) {
+            if(current==0) {
+                const uint32_t a=key1^(key1<<11), b=key4;
+                const uint32_t next=a^b^((a^(b>>11))>>8);
+                key1=key2;key2=key3;key3=b;key4=next;current=next;
+            }
+            data[i]^=uint8_t(current);current>>=8;
+        }
+    }
+};
 struct Reader {
     PsbDocument doc;
     std::vector<std::string> names,strings;
@@ -122,8 +138,23 @@ struct Reader {
         if(doc.bytes.size()<40 || std::memcmp(doc.bytes.data(),"PSB\0",4))Fail("not a PSB model");
         size_t p=4;doc.version=uint16_t(Int(p,2));
         if(doc.version<2 || doc.version>4)Fail("unsupported PSB version");
-        if(Int(p,2))Fail("encrypted PSB requires its original decoder");
-        if(doc.bytes.size()<(doc.version==4?56:doc.version==3?44:40))Fail("truncated PSB header");
+        const uint16_t encryption_flags=uint16_t(Int(p,2));
+        const size_t header_len=doc.version==4?56:doc.version==3?44:40;
+        if(doc.bytes.size()<header_len)Fail("truncated PSB header");
+        if(encryption_flags&1) {
+            // The header key is derived from the canonical header length: the
+            // encrypted word at offset 8 must decode to that length, which in
+            // turn yields the keystream seed (FreeMote/NekoMiko v4 layout).
+            uint32_t encrypted=0;
+            for(int i=0;i<4;++i)encrypted|=uint32_t(doc.bytes[8+i])<<(8*i);
+            const uint32_t a=kKey1^(kKey1<<11);
+            const uint32_t first=encrypted^uint32_t(header_len);
+            const uint32_t rhs=first^a^(a>>8);
+            const uint32_t key4=rhs^(rhs>>19);
+            PsbCipher(key4).Apply(doc.bytes.data()+8,header_len-8);
+        }
+        const uint32_t header_length=Header(8);
+        if(header_length!=0 && header_length!=header_len)Fail("unexpected PSB header length");
         Names(Header(12));p=Header(16);const auto offsets=Array(p);const auto base=Header(20);
         for(auto o:offsets)strings.push_back(Text(Offset(base,o)));
         Chunks(Header(24),Header(28),Header(32),doc.resources);
