@@ -652,7 +652,7 @@ bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
         {"tag", l_tag}, {"var", l_var}, {"isFileExists", l_isFileExists},
         {"include", l_include}, {"debug", l_debug}, {"now", l_now},
         {"file", l_file},
-        {"setTagFilter", l_noop},
+        {"setTagFilter", l_setTagFilter},
         {"setMagicPath", l_setMagicPath},
         {"setUseMultiTouch", l_noop},
         {"setUseTouchHold", l_noop},
@@ -2983,16 +2983,77 @@ bool LuaEngine::CallGlobalInternal(const std::string &fn, bool quiet) {
 }
 
 // Route an engine tag through the e:tag bridge (tag name = array item 1).
+int LuaEngine::FilterTag(const std::string &tag,
+                         const std::vector<std::pair<std::string, std::string>> &attrs,
+                         std::string *replacement) {
+    if (tag_filter_ref_ < 0) return 0;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, tag_filter_ref_);
+    int nargs = 0;
+    if (lua_isfunction(L_, -1)) {
+        lua_getglobal(L_, kBridgeTable);
+        lua_pushlstring(L_, tag.data(), tag.size());
+        lua_newtable(L_);
+        for (const auto &kv : attrs) {
+            lua_pushlstring(L_, kv.second.data(), kv.second.size());
+            lua_setfield(L_, -2, kv.first.c_str());
+        }
+        nargs = 3;
+    } else if (lua_istable(L_, -1)) {
+        lua_getfield(L_, -1, tag.c_str());
+        if (!lua_isfunction(L_, -1)) { lua_pop(L_, 2); return 0; }
+        lua_getglobal(L_, kBridgeTable);
+        lua_newtable(L_);
+        for (const auto &kv : attrs) {
+            lua_pushlstring(L_, kv.second.data(), kv.second.size());
+            lua_setfield(L_, -2, kv.first.c_str());
+        }
+        lua_remove(L_, -3); // drop the filter table below the function
+        nargs = 2;
+    } else {
+        lua_pop(L_, 1);
+        return 0;
+    }
+    if (PCallTraceback(L_, nargs, 1) != 0) {
+        Log(kLogError, "tag filter " + tag + ": " + std::string(lua_tostring(L_, -1)));
+        lua_pop(L_, 1);
+        return 0; // allow on error
+    }
+    int result = 0;
+    if (lua_isboolean(L_, -1)) result = lua_toboolean(L_, -1) ? 1 : 0;
+    else if (lua_isnumber(L_, -1)) result = lua_tointeger(L_, -1) != 0 ? 1 : 0;
+    else if (lua_isstring(L_, -1)) {
+        if (replacement) *replacement = lua_tostring(L_, -1);
+        result = 2;
+    }
+    lua_pop(L_, 1);
+    return result;
+}
+
+int LuaEngine::l_setTagFilter(lua_State *L) {
+    auto *self = Self(L);
+    if (!lua_isnoneornil(L, 2) && !lua_isfunction(L, 2) && !lua_istable(L, 2))
+        return luaL_error(L, "setTagFilter expects a function, table or nil");
+    luaL_unref(L, LUA_REGISTRYINDEX, self->tag_filter_ref_);
+    if (lua_isnoneornil(L, 2)) lua_pushnil(L);
+    else lua_pushvalue(L, 2);
+    self->tag_filter_ref_ = luaL_ref(L, LUA_REGISTRYINDEX);
+    return 0;
+}
+
 bool LuaEngine::DispatchTag(const std::string &tag,
                             const std::vector<std::pair<std::string, std::string>> &attrs) {
     if (!L_) return false;
+    std::string replacement;
+    const int filtered = FilterTag(tag, attrs, &replacement);
+    if (filtered == 1) return true; // intercepted
+    const std::string &effective = (filtered == 2 && !replacement.empty()) ? replacement : tag;
     lua_getglobal(L_, kBridgeTable);
     if (!lua_istable(L_, -1)) { lua_pop(L_, 1); return false; }
     lua_getfield(L_, -1, "tag");
     if (!lua_isfunction(L_, -1)) { lua_pop(L_, 2); return false; }
     lua_pushvalue(L_, -2);             // self
     lua_newtable(L_);                  // tag table
-    lua_pushlstring(L_, tag.c_str(), tag.size());
+    lua_pushlstring(L_, effective.c_str(), effective.size());
     lua_rawseti(L_, -2, 1);
     for (const auto &kv : attrs) {
         lua_pushlstring(L_, kv.first.c_str(), kv.first.size());

@@ -214,9 +214,16 @@ private:
     static int l_getTouchCount(lua_State *L);
     static int l_setEventHandler(lua_State *L);
     static int l_setEventFilter(lua_State *L);
+    static int l_setTagFilter(lua_State *L);
+    // Run the tag filter (function or per-tag table). Returns 0 allow, 1 block,
+    // 2 replace (fills *replacement).
+    int FilterTag(const std::string &tag,
+                  const std::vector<std::pair<std::string, std::string>> &attrs,
+                  std::string *replacement);
     bool FilterEvent(const std::string& kind,
                      const std::vector<std::pair<std::string, std::string>>& attrs);
     int event_filter_ref_ = -2; // LUA_NOREF
+    int tag_filter_ref_ = -2;   // LUA_NOREF
     static int l_overrideKey(lua_State *L);
     void DispatchFrameInput();
     void DispatchClick(float x, float y);
