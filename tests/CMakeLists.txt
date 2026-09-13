@@ -41,6 +41,10 @@ add_executable(hlsl_glsl_regressions hlsl_glsl_regressions.cpp)
 target_link_libraries(hlsl_glsl_regressions PRIVATE artemis_core)
 add_test(NAME hlsl_glsl_regressions COMMAND hlsl_glsl_regressions)
 
+add_executable(emote_mesh_regressions emote_mesh_regressions.cpp)
+target_link_libraries(emote_mesh_regressions PRIVATE artemis_core)
+add_test(NAME emote_mesh_regressions COMMAND emote_mesh_regressions)
+
 # Video decoding only when the core was built with FFmpeg and the tool is
 # available to synthesize a fixture.
 get_target_property(ARTC_DEFINES artemis_deps INTERFACE_COMPILE_DEFINITIONS)
