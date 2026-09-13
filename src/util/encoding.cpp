@@ -1,6 +1,7 @@
 #include "util/encoding.h"
 #include "util/cp932_table.h"
 
+#include <cctype>
 #include <unordered_map>
 
 namespace artc {
@@ -118,6 +119,30 @@ bool Utf8ToShiftJis(const std::string &in, std::string &out) {
         }
     }
     return true;
+}
+
+namespace {
+std::string g_text_charset;
+std::string Lower(std::string s) {
+    for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+} // namespace
+
+void SetTextCharset(const std::string &charset) { g_text_charset = charset; }
+const std::string &TextCharset() { return g_text_charset; }
+
+bool DecodeToUtf8(const std::string &bytes, const std::string &charset, std::string &out) {
+    const std::string cs = Lower(charset);
+    if (cs.empty() || cs == "utf-8" || cs == "utf8" || cs == "unicode") {
+        // Already UTF-8 (a valid sequence passes through unchanged).
+        out = bytes;
+        return true;
+    }
+    // shift_jis / sjis / cp932 / ms932 and unknown charsets fall back to SJIS.
+    if (ShiftJisToUtf8(bytes, out)) return true;
+    out = bytes; // not decodable: keep bytes rather than dropping the script
+    return false;
 }
 
 } // namespace artc

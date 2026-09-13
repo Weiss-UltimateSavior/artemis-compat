@@ -172,12 +172,24 @@ void TestShiftJisLookup() {
     std::filesystem::remove(path);
 }
 
+void TestDecodeToUtf8() {
+    const std::string utf8 = "背景/タイトル.png";
+    std::string cp932;
+    Check(artc::Utf8ToShiftJis(utf8, cp932), "encode cp932 for decode test");
+    std::string back;
+    Check(artc::DecodeToUtf8(cp932, "cp932", back) && back == utf8, "cp932 decode");
+    Check(artc::DecodeToUtf8(cp932, "shift_jis", back) && back == utf8, "shift_jis decode");
+    Check(artc::DecodeToUtf8(utf8, "utf-8", back) && back == utf8, "utf-8 passthrough");
+    Check(artc::DecodeToUtf8(utf8, "", back) && back == utf8, "empty charset passthrough");
+}
+
 } // namespace
 
 int main() {
     TestEncryptedCaseAndRange();
     TestClearTextPf2();
     TestShiftJisLookup();
+    TestDecodeToUtf8();
     if (g_failures == 0) std::cout << "pf8_regressions: ok\n";
     return g_failures == 0 ? 0 : 1;
 }

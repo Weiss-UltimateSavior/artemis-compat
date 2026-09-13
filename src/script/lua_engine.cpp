@@ -13,6 +13,7 @@
 #include "script/native_save.h"
 #include "script/save_storage.h"
 #include "script/save_metadata.h"
+#include "util/encoding.h"
 #include <filesystem>
 #include "log/logger.h"
 
@@ -624,6 +625,12 @@ bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
             InstallTagIniFromText(std::string(tag_ini.begin(), tag_ini.end()));
         else
             ClearTagIni();
+    }
+    // Project text charset (system.ini CHARSET) for script decoding.
+    {
+        std::string cs = systemIni.Get("WINDOWS", "CHARSET");
+        if (cs.empty()) cs = systemIni.Get("ANDROID", "CHARSET");
+        SetTextCharset(cs);
     }
     L_ = luaL_newstate();
     if (!L_) return false;
