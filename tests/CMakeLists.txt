@@ -53,6 +53,18 @@ add_executable(layer_kind_regressions layer_kind_regressions.cpp)
 target_link_libraries(layer_kind_regressions PRIVATE artemis_core)
 add_test(NAME layer_kind_regressions COMMAND layer_kind_regressions)
 
+add_executable(expression_regressions expression_regressions.cpp)
+target_link_libraries(expression_regressions PRIVATE artemis_core)
+add_test(NAME expression_regressions COMMAND expression_regressions)
+
+add_executable(text_rules_regressions text_rules_regressions.cpp)
+target_link_libraries(text_rules_regressions PRIVATE artemis_core)
+add_test(NAME text_rules_regressions COMMAND text_rules_regressions)
+
+add_executable(emote_timeline_regressions emote_timeline_regressions.cpp)
+target_link_libraries(emote_timeline_regressions PRIVATE artemis_core)
+add_test(NAME emote_timeline_regressions COMMAND emote_timeline_regressions)
+
 # Video decoding only when the core was built with FFmpeg and the tool is
 # available to synthesize a fixture.
 get_target_property(ARTC_DEFINES artemis_deps INTERFACE_COMPILE_DEFINITIONS)

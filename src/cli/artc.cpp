@@ -8,6 +8,8 @@
 #include "config/ini.h"
 #include "log/logger.h"
 #include "pack/pack_manager.h"
+#include "pack/psb.h"
+#include "render/emote_model.h"
 #include "script/lua_engine.h"
 #include "script/asb_parser.h"
 #include "script/iet_interpreter.h"
@@ -15,6 +17,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -38,6 +41,7 @@ int Usage() {
         "  artc runlua  <pack> <script> --key <hex> [--os windows]\n"
         "  artc runiet  <pack> <script> --os windows   (auto key)\n"
         "  artc asb     <pack> <name>                  decode a compiled .asb script\n"
+        "  artc psb     <pack> <name>                  dump a PSB tree / E-mote info\n"
         "  artc drive   <pack> [--os android|windows] [--frames N]\n"
         "                       [--tap x,y@frame ...] [--journey title|prologue]\n"
         "                       [--assert SUBSTR ...]  host frame-loop harness\n");
@@ -153,6 +157,49 @@ int main(int argc, char **argv) {
 
     if (cmd == "drive") {
         return RunDrive(pack, os_name, frames, taps, asserts);
+    }
+
+    if (cmd == "psb") {
+        if (name.empty()) return Usage();
+        Pf8Reader reader2;
+        if (!reader2.Open(pack, key)) return 1;
+        std::vector<uint8_t> img;
+        if (!reader2.Read(name, img)) { std::fprintf(stderr, "not found: %s\n", name.c_str()); return 1; }
+        PsbDocument doc;
+        std::string error;
+        if (!DecodePsb(img, doc, error)) { std::fprintf(stderr, "psb: %s\n", error.c_str()); return 1; }
+        std::printf("PSB v%d root=%zu bytes\n", doc.version, doc.bytes.size());
+        std::function<void(const PsbValue &, int)> dump = [&](const PsbValue &v, int depth) {
+            if (depth > 8) return;
+            std::string pad(static_cast<size_t>(depth) * 2, ' ');
+            switch (v.type) {
+            case PsbValue::Object:
+                for (const auto &kv : v.object) {
+                    std::printf("%s%s:\n", pad.c_str(), kv.first.c_str());
+                    dump(kv.second, depth + 1);
+                }
+                break;
+            case PsbValue::Array:
+                std::printf("%s[%zu]\n", pad.c_str(), v.array.size());
+                if (!v.array.empty() && depth < 3) dump(v.array.front(), depth + 1);
+                break;
+            case PsbValue::String: std::printf("%s\"%s\"\n", pad.c_str(), v.string.c_str()); break;
+            case PsbValue::Number: std::printf("%s%g\n", pad.c_str(), v.number); break;
+            case PsbValue::Boolean: std::printf("%s%s\n", pad.c_str(), v.number ? "true" : "false"); break;
+            case PsbValue::Resource: std::printf("%s<resource %u%s>\n", pad.c_str(), v.resource, v.extra ? " extra" : ""); break;
+            default: std::printf("%s(null)\n", pad.c_str()); break;
+            }
+        };
+        dump(doc.root, 0);
+        EmoteModel model;
+        if (model.Load(doc, error)) {
+            std::printf("E-mote: %zu timeline(s), %zu variable(s)\n",
+                        model.Timelines().size(), model.Variables().size());
+            for (const auto &kv : model.Timelines())
+                std::printf("  timeline %s (last=%g loop=%g..%g)\n", kv.first.c_str(),
+                            kv.second.last_time, kv.second.loop_begin, kv.second.loop_end);
+        }
+        return 0;
     }
 
     if (cmd == "runlua" || cmd == "runiet") {
