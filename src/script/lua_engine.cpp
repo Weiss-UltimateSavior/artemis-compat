@@ -1443,6 +1443,73 @@ int LuaEngine::l_tag(lua_State *L) {
         }
         return 0;
     }
+    // Generic setonX/delonX registry (handler kinds without dedicated state).
+    if (inst && (tagname.rfind("seton", 0) == 0 || tagname.rfind("delon", 0) == 0)) {
+        const std::string key = tagname.substr(3); // drop the set/del prefix
+        if (key != "push" && key != "soundfinish" && key != "videofinish" &&
+            key != "automodein" && key != "automodeout") {
+            if (tagname.compare(0, 3, "set") == 0)
+                inst->named_events_[key] = {m.begin(), m.end()};
+            else
+                inst->named_events_.erase(key);
+            return 0;
+        }
+    }
+    if (tagname == "hide" && inst && inst->compositor_) {
+        const bool allow = !m.count("allow") || m["allow"] != "0";
+        // window= is a comma-separated layer list hidden while allow=1.
+        if (m.count("window")) {
+            const std::string &list = m.at("window");
+            auto trim = [](std::string v) {
+                size_t a = 0, b = v.size();
+                while (a < b && std::isspace(static_cast<unsigned char>(v[a]))) ++a;
+                while (b > a && std::isspace(static_cast<unsigned char>(v[b - 1]))) --b;
+                return v.substr(a, b - a);
+            };
+            size_t s = 0;
+            while (s <= list.size()) {
+                size_t e = list.find(',', s);
+                std::string id = trim(list.substr(s, e == std::string::npos ? std::string::npos : e - s));
+                if (!id.empty())
+                    inst->compositor_->SetProps(id, {{"visible", allow ? "0" : "1"}});
+                if (e == std::string::npos) break;
+                s = e + 1;
+            }
+        }
+        const bool want_hidden = !allow;
+        if (inst->hidden_ != want_hidden) {
+            inst->hidden_ = want_hidden;
+            inst->FireNamedEvent(want_hidden ? "onhidein" : "onhideout");
+        }
+        return 0;
+    }
+    if (tagname == "lyedit" && inst && inst->compositor_ && m.count("id")) {
+        // Replace a layer's image and/or restate its transform/alpha.
+        if (m.count("file")) inst->compositor_->LoadImage(m["id"], inst->ResolvePackPath(m["file"]));
+        std::map<std::string, std::string> props;
+        for (const char *k : {"left", "top", "alpha", "clip", "xscale", "yscale"})
+            if (m.count(k)) props[k] = m[k];
+        if (!props.empty()) inst->compositor_->SetProps(m["id"], props);
+        return 0;
+    }
+    if (tagname == "uitrans" && inst && inst->compositor_) {
+        const std::string t = m.count("time") ? m["time"] : (m.count("0") ? m["0"] : "500");
+        const int time = std::atoi(t.c_str());
+        inst->transition_wait_ = true;
+        if (time > 0) inst->compositor_->BeginTransition(inst->NowMs(), time, {}, 0, 0, 0);
+        return 0;
+    }
+    // Recognized engine-informational / config tags: the framework owns their
+    // UI, so store nothing and let the script continue instead of dispatching
+    // them as unknown.
+    if (tagname == "scein" || tagname == "sceout" || tagname == "backlog" ||
+        tagname == "alreadyread" || tagname == "writebacklog" || tagname == "rclick" ||
+        tagname == "sysshow" || tagname == "syshide" || tagname == "loadmask" ||
+        tagname == "alldelete" || tagname == "repeatedly" ||
+        tagname == "autoskip_disable" || tagname == "macroadd" ||
+        tagname == "macrodel" || tagname == "loading" || tagname == "saving") {
+        return 0;
+    }
     if (tagname == "lydel" && m.count("id")) {
             inst->compositor_->DeleteLayer(m["id"]);
             // Drop click handlers of the deleted subtree (like the title
@@ -2370,6 +2437,18 @@ void LuaEngine::SetAutoMode(bool enabled) {
     const auto token = script_runner_ ? script_runner_->BeginEvent(*this) : 0;
     if (!values["function"].empty()) CallEvent(values["function"], attrs, false);
     else if (!values["file"].empty()) DispatchTag(values["handler"] == "jump" ? "jump" : "call", attrs);
+    if (script_runner_) script_runner_->EndEvent(token);
+}
+
+void LuaEngine::FireNamedEvent(const std::string &key) {
+    const auto it = named_events_.find(key);
+    if (it == named_events_.end()) return;
+    const auto attrs = it->second; // callback can unregister itself
+    std::map<std::string, std::string> values(attrs.begin(), attrs.end());
+    const auto token = script_runner_ ? script_runner_->BeginEvent(*this) : 0;
+    if (!values["function"].empty()) CallEvent(values["function"], attrs, false);
+    else if (!values["file"].empty())
+        DispatchTag(values["handler"] == "jump" ? "jump" : "call", attrs);
     if (script_runner_) script_runner_->EndEvent(token);
 }
 

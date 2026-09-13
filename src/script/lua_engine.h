@@ -222,6 +222,7 @@ private:
     void DispatchClick(float x, float y);
     void AdvanceByInput();
     void SetAutoMode(bool enabled);
+    void FireNamedEvent(const std::string &key);
     void UpdateVideos();
     void UpdateEmotes();
     // e:createEmoteLayer{...} / e:getEmoteLayer(id) / e:getEmoteVersion()
@@ -293,6 +294,10 @@ private:
     std::vector<std::string> auto_sync_se_;
     AutoReadTimer auto_timer_;
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> auto_events_;
+    // Generic setonX/delonX registry for handler kinds without dedicated state
+    // (backlog/commandskip/controlskip/dirchg/hide/windowbutton ...).
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> named_events_;
+    bool hidden_ = false;   // [hide] state (fires onhidein/onhideout)
     // KrKr2-Next: [wait se=N] — released when voice N stops (or by input).
     bool se_wait_ = false;
     std::string wait_se_key_;
