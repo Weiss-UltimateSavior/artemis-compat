@@ -190,6 +190,11 @@ public:
     void BeginTweenSet();
     void EndTweenSet(double now_ms);
     void DeleteTweens(const std::string &id);
+    // [anime] frame animation: init/add accumulate (time,file,props) frames,
+    // end sorts and starts playback. Frames switch the layer image/props.
+    void SetAnimeFrame(const std::string &id, const std::string &mode,
+                       const std::string &file, int time_ms, int loop,
+                       const std::map<std::string, std::string> &props, double now_ms);
     // Advance tweens/transition to `now_ms`; returns true when the picture
     // changed (the caller redraws). Call once per frame before Draw().
     bool Update(double now_ms);
@@ -272,6 +277,22 @@ private:
     std::vector<Tween> tweens_;
     bool collecting_tweens_ = false;
     std::vector<Tween> tween_set_;
+    // [anime] frame animation state per layer.
+    struct AnimeFrame {
+        double time_ms = 0;
+        std::string file;
+        std::map<std::string, std::string> props;
+    };
+    struct AnimeState {
+        std::vector<AnimeFrame> frames;
+        int loop = -1;
+        double start_ms = 0;
+        double total_ms = 0;
+        std::string active_file;
+        int active_index = -1;
+    };
+    std::map<std::string, AnimeState> anime_;
+    void AdvanceAnime(double now_ms, bool *changed);
     double now_ms_ = 0;
     // transition state
     bool trans_active_ = false;

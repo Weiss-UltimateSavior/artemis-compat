@@ -1492,6 +1492,20 @@ int LuaEngine::l_tag(lua_State *L) {
         if (!props.empty()) inst->compositor_->SetProps(m["id"], props);
         return 0;
     }
+    if (tagname == "anime" && inst && inst->compositor_) {
+        const std::string id = m.count("id") ? m["id"] : "";
+        const std::string mode = m.count("mode") ? m["mode"] : "init";
+        const std::string file = m.count("file") ? inst->ResolvePackPath(m["file"]) : "";
+        const int time = std::atoi((m.count("time") ? m["time"]
+                                   : (m.count("0") ? m["0"] : "0")).c_str());
+        const int loop = m.count("loop") ? std::atoi(m["loop"].c_str()) : -1;
+        std::map<std::string, std::string> props;
+        for (const char *k : {"left", "top", "alpha", "clip", "anchorx", "anchory",
+                              "xscale", "yscale"})
+            if (m.count(k)) props[k] = m[k];
+        inst->compositor_->SetAnimeFrame(id, mode, file, time, loop, props, inst->NowMs());
+        return 0;
+    }
     if (tagname == "uitrans" && inst && inst->compositor_) {
         const std::string t = m.count("time") ? m["time"] : (m.count("0") ? m["0"] : "500");
         const int time = std::atoi(t.c_str());

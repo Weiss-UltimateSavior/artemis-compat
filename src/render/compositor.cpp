@@ -524,6 +524,71 @@ void Compositor::DeleteTweens(const std::string &id) {
     }
 }
 
+void Compositor::SetAnimeFrame(const std::string &id, const std::string &mode,
+                               const std::string &file, int time_ms, int loop,
+                               const std::map<std::string, std::string> &props,
+                               double now_ms) {
+    if (id.empty()) return;
+    ++revision_;
+    AnimeState &st = anime_[id];
+    if (mode == "init") {
+        st = AnimeState();
+        st.loop = loop;
+        st.frames.push_back({static_cast<double>(time_ms), file, props});
+        if (!file.empty()) LoadImage(id, file);
+        if (!props.empty()) SetProps(id, props);
+        st.active_file = file;
+        st.active_index = 0;
+    } else if (mode == "add") {
+        st.frames.push_back({static_cast<double>(time_ms), file, props});
+    } else if (mode == "end") {
+        std::stable_sort(st.frames.begin(), st.frames.end(),
+                         [](const AnimeFrame &a, const AnimeFrame &b) {
+                             return a.time_ms < b.time_ms;
+                         });
+        st.total_ms = time_ms > 0 ? time_ms
+                     : (st.frames.empty() ? 0 : st.frames.back().time_ms);
+        st.start_ms = now_ms;
+        st.active_index = -1;
+        st.active_file.clear();
+        bool changed = false;
+        AdvanceAnime(now_ms, &changed);
+    }
+}
+
+void Compositor::AdvanceAnime(double now_ms, bool *changed) {
+    std::vector<std::string> gone;
+    for (auto &entry : anime_) {
+        AnimeState &st = entry.second;
+        if (st.frames.empty() || st.total_ms <= 0) continue;
+        bool exists = false;
+        for (const auto &l : layers_) if (l.id == entry.first) { exists = true; break; }
+        if (!exists) { gone.push_back(entry.first); continue; }
+        const double elapsed = now_ms - st.start_ms;
+        double t;
+        if (st.loop < 0) {
+            t = elapsed > 0 ? std::fmod(elapsed, st.total_ms) : 0;
+        } else {
+            const double rounds = st.loop == 0 ? 1 : static_cast<double>(st.loop);
+            if (elapsed >= st.total_ms * rounds) t = st.total_ms; // hold last
+            else t = elapsed > 0 ? std::fmod(elapsed, st.total_ms) : 0;
+        }
+        int index = 0;
+        for (size_t i = 0; i < st.frames.size(); ++i)
+            if (st.frames[i].time_ms <= t) index = static_cast<int>(i);
+        if (index == st.active_index) continue;
+        const AnimeFrame &f = st.frames[index];
+        if (!f.file.empty() && f.file != st.active_file) {
+            LoadImage(entry.first, f.file);
+            st.active_file = f.file;
+        }
+        if (!f.props.empty()) SetProps(entry.first, f.props);
+        st.active_index = index;
+        if (changed) *changed = true;
+    }
+    for (const auto &id : gone) anime_.erase(id);
+}
+
 bool Compositor::Update(double now_ms) {
     bool changed = PendingTextMs(now_ms_) > 0;
     now_ms_ = now_ms;
@@ -561,6 +626,7 @@ bool Compositor::Update(double now_ms) {
         if (now_ms - trans_start_ms_ >= trans_time_ms_) trans_active_ = false;
         changed = true;   // the overlay fades every frame (or just went away)
     }
+    AdvanceAnime(now_ms, &changed);
     if (changed) ++revision_;
     return changed;
 }
