@@ -22,7 +22,8 @@ using namespace artc;
 
 namespace artc {
 int RunDrive(const std::string &pack, const std::string &osName, int frames,
-             const std::vector<std::string> &tapSpecs);
+             const std::vector<std::string> &tapSpecs,
+             const std::vector<std::string> &asserts);
 } // namespace artc
 
 namespace {
@@ -38,7 +39,8 @@ int Usage() {
         "  artc runiet  <pack> <script> --os windows   (auto key)\n"
         "  artc asb     <pack> <name>                  decode a compiled .asb script\n"
         "  artc drive   <pack> [--os android|windows] [--frames N]\n"
-        "                       [--tap x,y@frame ...]  host frame-loop harness\n");
+        "                       [--tap x,y@frame ...] [--journey title|prologue]\n"
+        "                       [--assert SUBSTR ...]  host frame-loop harness\n");
     return 2;
 }
 
@@ -53,6 +55,8 @@ int main(int argc, char **argv) {
     bool have_key = false;
     int frames = 3000;
     std::vector<std::string> taps;
+    std::vector<std::string> asserts;
+    std::string journey;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--key" && i + 1 < argc) { key_hex = argv[++i]; have_key = true; }
@@ -60,7 +64,16 @@ int main(int argc, char **argv) {
         else if (a == "--os" && i + 1 < argc) os_name = argv[++i];
         else if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (a == "--tap" && i + 1 < argc) { taps.emplace_back(argv[++i]); }
+        else if (a == "--assert" && i + 1 < argc) { asserts.emplace_back(argv[++i]); }
+        else if (a == "--journey" && i + 1 < argc) { journey = argv[++i]; }
         else name = a;
+    }
+    // Deterministic journey presets: advance the common flows with periodic
+    // centre taps so a real pack can be regression-driven without a human.
+    if (!journey.empty()) {
+        int end = journey == "title" ? 700 : journey == "prologue" ? 2200 : 0;
+        if (end == 0) { std::fprintf(stderr, "unknown journey: %s\n", journey.c_str()); return 2; }
+        for (int f = 20; f <= end; f += 60) taps.push_back("640,400@" + std::to_string(f));
     }
     std::vector<uint8_t> key;
     if (have_key && !ParseHexKey(key_hex, key)) {
@@ -139,7 +152,7 @@ int main(int argc, char **argv) {
     }
 
     if (cmd == "drive") {
-        return RunDrive(pack, os_name, frames, taps);
+        return RunDrive(pack, os_name, frames, taps, asserts);
     }
 
     if (cmd == "runlua" || cmd == "runiet") {

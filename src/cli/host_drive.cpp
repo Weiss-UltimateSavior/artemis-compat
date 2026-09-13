@@ -57,7 +57,11 @@ static bool ParseTap(const std::string &s, DriveTap *out) {
 }
 
 int RunDrive(const std::string &pack, const std::string &osName, int frames,
-             const std::vector<std::string> &tapSpecs) {
+             const std::vector<std::string> &tapSpecs,
+             const std::vector<std::string> &asserts) {
+    // Capture engine output so the run can be asserted deterministically.
+    std::vector<std::string> captured;
+    SetLogSink([&captured](int, const std::string &msg) { captured.push_back(msg); });
     std::vector<DriveTap> taps;
     for (const std::string &t : tapSpecs) {
         DriveTap tap;
@@ -304,7 +308,20 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
 
     Log(kLogInfo, "drive: end frames=" + std::to_string(frames) +
                       " click-waits engaged=" + std::to_string(engages));
-    return 0;
+    SetLogSink(nullptr);
+    int rc = 0;
+    for (const std::string &want : asserts) {
+        bool found = false;
+        for (const std::string &line : captured)
+            if (line.find(want) != std::string::npos) { found = true; break; }
+        if (!found) {
+            Log(kLogError, "assert not reached: " + want);
+            rc = 1;
+        }
+    }
+    for (const std::string &line : captured)
+        if (line.find("ERROR") != std::string::npos) { rc = rc ? rc : 2; break; }
+    return rc;
 }
 
 } // namespace artc
