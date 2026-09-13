@@ -1636,10 +1636,13 @@ int LuaEngine::l_tag(lua_State *L) {
             return 0;
         }
         if (tagname == "fontinit" && inst) {
+            // Reset the current font state only. Per-layer rects registered by
+            // earlier chgmsg+font pairs must survive, or every set_textfont
+            // call would wipe the geometry of the layers before it.
             inst->font_defaults_.clear();
-            inst->font_of_.clear();
             inst->font_main_.clear();
             inst->font_name_.clear();
+            if (!inst->msg_layer_.empty()) inst->font_of_.erase(inst->msg_layer_);
             return 0;
         }
         if (tagname == "font_close" && inst) {
