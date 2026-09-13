@@ -139,23 +139,13 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
                 lua->DispatchTag(name, attrs);
             }
         }
+        lua->SetScriptRunner(runner.get());
         lua->SetJumpHandler([&runner](const std::string &file,
                                       const std::string &label) {
-            // STATUS_RETURN: a return/stop just popped a frame — skip the
-            // framework's trailing `tag{"jump" ui.asb return}` (dialog_return)
-            // so it can't clobber the popfunc chain that resumes next.
-            if (runner->Returning()) {
-                Log(kLogInfo, "asb: skip jump while returning: " + label);
-                return;
-            }
             runner->Jump(file, label);
         });
         lua->SetCallHandler([&runner](const std::string &file,
                                       const std::string &label) {
-            if (runner->Returning()) {
-                Log(kLogInfo, "asb: skip call while returning: " + label);
-                return;
-            }
             runner->Call(file, label);
         });
         if (std::getenv("ARTC_CSV_TRACE"))
@@ -169,11 +159,14 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
                 "   print('PVZ|'..tostring(nm)..'['..tostring(n)..']='..type(x)..'#'..tostring(type(x)=='table' and #x or -1)..'|flag='..tostring(on)) "
                 "  end end end",
                 "csvprobe");
-        lua->SetStopHandler([&runner, &lua](const std::string &tag) {
-            // stop → 停机等待 eqtag 排水: defer the pop while a wait is queued
-            // (dialog eqwait keeps the popfunc chain paused until answered).
-            if (tag == "stop" && lua && lua->HasQueuedTag()) {
-                Log(kLogInfo, "asb: stop deferred (queued wait)");
+        lua->SetStopHandler([&runner](const std::string &tag) {
+            // [stop] halts the script until an explicit jump/call re-enters
+            // it; [return] pops the call frame. Popping on `stop` — the old
+            // upstream heuristic — let the main loop run past a pending
+            // choice.
+            if (tag == "stop") {
+                runner->Halt();
+                Log(kLogInfo, "asb: stop via lua tag (halt)");
                 return;
             }
             if (!runner->Return()) {
@@ -205,11 +198,7 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
                 }
                 Log(kLogInfo, "queued [" + name + "] file=" + file +
                                   " label=" + label);
-                if (runner->Returning()) {
-                    Log(kLogInfo, "skip queued [" + name + "] while returning");
-                } else {
-                    runner->Jump(file, label);
-                }
+                runner->Jump(file, label);
             } else {
                 lua->DispatchTag(name, attrs);
             }
@@ -283,48 +272,33 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
         // 4) step the native script runner (≤ 4 lines per frame)
         if (!w && runner && runner->Loaded() && !runner->Halted()) {
             for (int n = 0; n < 4 && runner->Loaded() && !runner->Halted(); ++n) {
-                runner->ClearReturning();   // a return was resolved last line
-                const AsbLine &ln = runner->Current();
-                if (std::getenv("ARTC_STEP_TRACE"))
+                if (std::getenv("ARTC_STEP_TRACE")) {
+                    const AsbLine &ln = runner->Current();
                     Log(kLogInfo, std::string("step pc=") +
                                       std::to_string(runner->CurrentIndex()) +
                                       " src# " + std::to_string(ln.lineno) +
                                       ": " +
                                       (ln.is_label ? "*" + ln.command
                                                    : "[" + ln.command + "]"));
-                if (ln.is_label) {
-                    runner->Advance();
-                } else if (ln.command == "\x02LUA") {
-                    for (const auto &kv : ln.attrs)
-                        if (kv.first == "code") lua->DoString(kv.second, "asb:lua");
-                    runner->Advance();
-                } else if (ln.command == "calllua") {
-                    std::string fn;
-                    for (const auto &kv : ln.attrs)
-                        if (kv.first == "function") fn = kv.second;
-                    lua->CallGlobal(fn);
-                    runner->Advance();
-                } else if (ln.command == "jump") {
-                    std::string lbl;
-                    for (const auto &kv : ln.attrs)
-                        if (kv.first == "label") lbl = kv.second;
-                    runner->JumpTo(lbl);
-                } else if (ln.command == "stop" || ln.command == "return") {
-                    if (!runner->Return()) runner->Halt();
-                } else {
-                    lua->DispatchTag(ln.command, ln.attrs);
-                    runner->Advance();
                 }
+                // Lua may jump/call/return while the instruction runs.
+                runner->ExecuteLine(*lua);
                 // command-boundary queue processing (estag call chains)
                 drain();
                 if (lua && lua->IsWaiting()) break;
             }
+        } else if (!w && lua && lua->HasQueuedTag()) {
+            // runner not loaded yet: still process the boot estag chain.
+            drain();
         }
 
-        // 5) layer tracing: every layer's effective rect, once each
+        // 5) advance [lytween] / [trans] animations to this frame's time
+        if (lua) compositor.Update(lua->NowMs());
+
+        // 6) layer tracing: every layer's effective rect, once each
         compositor.DumpRects();
 
-        // 6) clear per-frame input edges
+        // 7) clear per-frame input edges
         lua->EndFrame();
     }
 

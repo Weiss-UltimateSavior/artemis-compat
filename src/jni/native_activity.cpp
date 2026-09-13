@@ -197,6 +197,7 @@ bool BootScene(PackManager &packs, const artc::Ini &ini,
                artc::AsbRunner *runner) {
     const int stage_w = ini.GetInt("ANDROID", "WIDTH", 1280);
     const int stage_h = ini.GetInt("ANDROID", "HEIGHT", 720);
+    compositor.SetPackManager(&packs);
     compositor.Init(stage_w, stage_h); // builds the GLES2 program (ctx current)
 
     g_state.lua = std::make_unique<artc::LuaEngine>();
@@ -229,33 +230,22 @@ bool BootScene(PackManager &packs, const artc::Ini &ini,
     // Native script runner: the framework's [jump file=… label=…] tag hands
     // control to the compiled .asb script (system flow: scriptMainloop loop).
     runner->SetPackSource(&packs);
+    g_state.lua->SetScriptRunner(runner);
     g_state.lua->SetJumpHandler([runner](const std::string &file,
                                          const std::string &label) {
-        // STATUS_RETURN: a return/stop just popped a frame, so the framework's
-        // trailing `tag{"jump" ui.asb return}` (dialog_return) must be skipped
-        // — it would otherwise clobber the popfunc chain that resumes next.
-        if (runner->Returning()) {
-            LOGI("asb: skip jump while returning: %s", label.c_str());
-            return;
-        }
         runner->Jump(file, label);
     });
     g_state.lua->SetCallHandler([runner](const std::string &file,
                                          const std::string &label) {
-        if (runner->Returning()) {
-            LOGI("asb: skip call while returning: %s", label.c_str());
-            return;
-        }
         runner->Call(file, label);
     });
-    g_state.lua->SetStopHandler([runner, lua = g_state.lua.get()](
-                                    const std::string &tag) {
-        // Real engine: `stop → 停机等待 eqtag 排水`. When a wait is already
-        // queued (the dialog's eqwait), defer the frame pop — the queued wait
-        // engages next and keeps the popfunc chain paused so dialog_exit runs
-        // only after the player answers (fn.set). [return] always pops.
-        if (tag == "stop" && lua && lua->HasQueuedTag()) {
-            LOGI("asb: stop deferred (queued wait)");
+    g_state.lua->SetStopHandler([runner](const std::string &tag) {
+        // [stop] halts the script until an explicit jump/call re-enters it;
+        // [return] pops the call frame. Popping on `stop` — the old upstream
+        // heuristic — let the main loop run past a pending choice.
+        if (tag == "stop") {
+            runner->Halt();
+            LOGI("asb: stop via lua tag (halt)");
             return;
         }
         if (!runner->Return()) {
@@ -397,11 +387,7 @@ void EngineThreadMain(ANativeActivity *activity) {
                         }
                         LOGI("queued [%s] file=%s label=%s",
                              name.c_str(), file.c_str(), label.c_str());
-                        if (runner.Returning()) {
-                            LOGI("skip queued [%s] while returning", name.c_str());
-                        } else {
-                            runner.Jump(file, label);
-                        }
+                        runner.Jump(file, label);
                     } else {
                         g_state.lua->DispatchTag(name, attrs);
                     }
@@ -414,7 +400,6 @@ void EngineThreadMain(ANativeActivity *activity) {
                     std::lock_guard<std::mutex> lk(g_state.input_mutex);
                     batch.swap(g_state.input_queue_events);
                 }
-                float sx = 1, sy = 1;
                 int touch_count = 0;
                 bool tapped = false;
                 bool was_dragging = false;
@@ -463,36 +448,9 @@ void EngineThreadMain(ANativeActivity *activity) {
                 !g_state.lua->IsWaiting()) {
                 for (int steps = 0; steps < 4 && runner.Loaded() &&
                                     !runner.Halted(); ++steps) {
-                    runner.ClearReturning();   // a return was resolved last line
-                    const artc::AsbLine &ln = runner.Current();
-                    if (ln.is_label) {
-                        runner.Advance();
-                    } else if (ln.command == "\x02LUA") {
-                        for (const auto &kv : ln.attrs)
-                            if (kv.first == "code")
-                                g_state.lua->DoString(kv.second, "asb:lua");
-                        runner.Advance();
-                    } else if (ln.command == "calllua") {
-                        for (const auto &kv : ln.attrs)
-                            if (kv.first == "function")
-                                g_state.lua->CallGlobal(kv.second);
-                        runner.Advance();
-                    } else if (ln.command == "jump") {
-                        std::string lbl;
-                        for (const auto &kv : ln.attrs)
-                            if (kv.first == "label") lbl = kv.second;
-                        runner.JumpTo(lbl);
-                    } else if (ln.command == "stop" || ln.command == "return") {
-                        if (!runner.Return()) {
-                            runner.Halt();
-                            LOGI("asb: [%s] reached (halt)", ln.command.c_str());
-                        } else {
-                            LOGI("asb: [%s] reached", ln.command.c_str());
-                        }
-                    } else {
-                        g_state.lua->DispatchTag(ln.command, ln.attrs);
-                        runner.Advance();
-                    }
+                    // Lua may jump/call/return while the instruction runs;
+                    // ExecuteLine does not retain references into the script.
+                    runner.ExecuteLine(*g_state.lua);
                     // command-boundary queue processing (estag chains)
                     drain();
                     if (g_state.lua->IsWaiting()) break;
@@ -503,6 +461,9 @@ void EngineThreadMain(ANativeActivity *activity) {
                 // estag03 chain enqueued by first.iet starts the asb runner).
                 drain();
             }
+            // Advance [lytween] / [trans] animations to this frame's time
+            // before compositing (bumps the layer revision while moving).
+            if (g_state.lua) compositor.Update(g_state.lua->NowMs());
                 // 3) present the current layer state
             renderer.Clear();   // clears the full surface (letterbox bars too)
             compositor.Draw();  // layers (script [flip] draws only)

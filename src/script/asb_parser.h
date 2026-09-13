@@ -9,6 +9,7 @@
 // The engine executes the tag stack natively: calllua → Lua global, jump →
 // reposition, stop → halt; every other tag dispatches through the e bridge.
 #pragma once
+#include "script/lua_engine.h"
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -17,6 +18,7 @@
 namespace artc {
 
 class PackManager;
+class LuaEngine;
 
 struct AsbLine {
     bool is_label = false;
@@ -44,9 +46,7 @@ public:
     void SetPackSource(PackManager *packs) { packs_ = packs; }
     // Read `file` from the pack chain, parse, and seek `label`.
     bool Jump(const std::string &file, const std::string &label);
-    // Jump with a return address (estag nesting): the caller resumes at the
-    // line after the call when Return() pops. Same-file only for now — a
-    // cross-file return falls back to halt (boot uses drain for those).
+    // Jump with a return address, including cross-file calls.
     bool Call(const std::string &file, const std::string &label);
     // Pop a call frame and resume the caller. Returns false when the stack is
     // empty (a plain script end).
@@ -58,15 +58,20 @@ public:
     }
     const AsbLine &Current() const { return script_.lines[pc_]; }
     size_t CurrentIndex() const { return pc_; }
-    // A [return]/stop tag that popped a frame sets returning_; while it is
-    // set, the real engine's tag dispatch skips the next tag (status 0xe /
-    // STATUS_RETURN guard in CommandJump/CommandCall) and Advance() must not
-    // move past the restored return point. Cleared when the next line runs.
-    bool Returning() const { return returning_; }
-    void ClearReturning() { returning_ = false; }
-    void Advance() { if (returning_) return; ++pc_; }
+    void Advance() { if (++pc_ >= script_.lines.size()) halted_ = true; }
+    // One native instruction. Lua may jump/call/return while the instruction
+    // runs; do not retain references into the script or advance its new cursor.
+    bool ExecuteLine(LuaEngine& lua);
     void JumpTo(const std::string &label);
     void Halt() { halted_ = true; }
+    // A load replaces the old scenario and any suspended menu/event frames.
+    void DiscardFlow();
+    // External events may yield into native script commands. A handler with
+    // no control transfer is completed synchronously by EndEvent.
+    uint64_t BeginEvent(LuaEngine& lua);
+    void EndEvent(uint64_t token);
+    void ShiftWaitDeadlines(LuaEngine& lua, std::chrono::steady_clock::duration pause);
+    std::vector<std::string> StackFiles() const;
 
 private:
     bool Load(const std::vector<uint8_t> &image, const std::string &label);
@@ -80,8 +85,19 @@ private:
     std::string current_file_;   // cache: the main loop re-jumps every frame
     size_t file_lines_ = 0;
     size_t file_labels_ = 0;
-    std::vector<std::pair<std::string, size_t>> callstack_;  // {file, pc}
-    bool returning_ = false;   // a return/stop popped a frame; next jump/call is skipped
+    struct Frame {
+        std::string file;
+        size_t pc;
+        bool halted = false;
+        uint64_t event = 0;
+        LuaEngine* lua = nullptr;
+        LuaEngine::WaitState wait{};
+    };
+    std::vector<Frame> callstack_;
+    uint64_t next_event_ = 0;
+    uint64_t event_entry_ = 0;
+    uint64_t event_revision_ = 0;
+    uint64_t flow_revision_ = 0;
 };
 
 } // namespace artc

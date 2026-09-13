@@ -1,8 +1,20 @@
 #include "pack/pack_manager.h"
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <algorithm>
 
 namespace artc {
+namespace {
+std::filesystem::path LoosePath(const std::string& base, std::string name) {
+    std::replace(name.begin(),name.end(),'\\','/');
+    const auto relative=std::filesystem::path(name).lexically_normal();
+    if(base.empty() || relative.empty() || relative.is_absolute()) return {};
+    for(const auto& part:relative) if(part=="..") return {};
+    return std::filesystem::path(base).parent_path()/relative;
+}
+}
 
 bool PackManager::OpenChain(const std::string &base_path,
                             const std::vector<uint8_t> &key) {
@@ -28,7 +40,18 @@ bool PackManager::Read(const std::string &name, std::vector<uint8_t> &out) const
     for (auto it = packs_.rbegin(); it != packs_.rend(); ++it) {
         if ((*it)->Read(name, out)) return true;
     }
-    return false;
+    // Games commonly distribute movies beside the PFS rather than inside it.
+    const auto path=LoosePath(base_path_,name);
+    if(path.empty()) return false;
+    std::ifstream input(path,std::ios::binary|std::ios::ate);
+    if(!input) return false;
+    const auto size=input.tellg();
+    if(size<0 || static_cast<uint64_t>(size)>0x7fffffff) return false;
+    std::vector<uint8_t> bytes(static_cast<size_t>(size));
+    input.seekg(0);
+    if(size && !input.read(reinterpret_cast<char*>(bytes.data()),size)) return false;
+    out=std::move(bytes);
+    return true;
 }
 
 bool PackManager::Exists(const std::string &name) const {
@@ -36,7 +59,9 @@ bool PackManager::Exists(const std::string &name) const {
     for (auto it = packs_.rbegin(); it != packs_.rend(); ++it) {
         if ((*it)->Find(name, e)) return true;
     }
-    return false;
+    const auto path=LoosePath(base_path_,name);
+    std::error_code error;
+    return !path.empty() && std::filesystem::is_regular_file(path,error);
 }
 
 std::string PackManager::FindFont() const {

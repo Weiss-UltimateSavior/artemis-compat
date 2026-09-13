@@ -1,4 +1,5 @@
 #include "script/asb_parser.h"
+#include "script/lua_engine.h"
 
 #include "log/logger.h"
 #include "pack/pack_manager.h"
@@ -81,6 +82,7 @@ bool ParseAsb(const std::vector<uint8_t> &data, AsbScript *out) {
 }
 
 bool AsbRunner::Load(const std::vector<uint8_t> &image, const std::string &label) {
+    ++flow_revision_;
     const bool binary = image.size() > 4 && image[0] == 'A' && image[1] == 'S' &&
                         image[2] == 'B' && image[3] == '\0';
     const bool ok = binary ? ParseAsb(image, &script_)
@@ -124,17 +126,13 @@ bool AsbRunner::Jump(const std::string &file, const std::string &label) {
     return true;
 }
 
-// Jump with a return address. estag invocation chains nest inside each other
-// (uitrans starts its own chain mid-way through the caller's): when the inner
-// chain hits [return], Return() pops back into the caller's frame instead of
-// halting. Same-file calls share the parsed script so pc resumes directly;
-// cross-file frames are not restored (fall back to halt).
 bool AsbRunner::Call(const std::string &file, const std::string &label) {
     // Only record a resume point when the caller's cursor is valid; a
     // Lua-originated estag call whose runner sits at a stale halt must not
     // push a return into a dead region.
-    if (loaded_ && pc_ + 1 < script_.lines.size())
-        callstack_.emplace_back(current_file_, pc_ + 1);
+    const bool event_start = event_entry_ && event_revision_ == flow_revision_;
+    if (!event_start && loaded_ && pc_ + 1 < script_.lines.size())
+        callstack_.push_back({current_file_, pc_ + 1});
     return Jump(file, label);
 }
 
@@ -142,12 +140,65 @@ bool AsbRunner::Return() {
     if (callstack_.empty()) return false;
     const auto top = callstack_.back();
     callstack_.pop_back();
-    if (top.first != current_file_) return false;   // cross-file: halt
-    if (top.second >= script_.lines.size()) return false;
-    pc_ = top.second;
-    halted_ = false;
-    returning_ = true;   // STATUS_RETURN: skip the next jump/call tag
+    if (top.file != current_file_) {
+        // KrKr2-Next: cross-file return — reload the caller's script and
+        // resume at the saved line. script.asb *movie_play does
+        // `[call file="system/first.iet" label="movie_emergendcy"]` and
+        // relies on the [return] landing back in script.asb; halting here
+        // stranded the story after every (skipped) movie.
+        std::vector<uint8_t> image;
+        if (!packs_ || !packs_->Read(top.file, image)) {
+            Log(kLogError, "asb: cannot reload caller script: " + top.file);
+            return false;
+        }
+        if (!Load(image, "")) return false;
+        current_file_ = top.file;
+        Log(kLogInfo, "asb: return to " + top.file + " line " + std::to_string(top.pc));
+    }
+    if (top.pc >= script_.lines.size() && !top.event) return false;
+    pc_ = top.pc;
+    ++flow_revision_;
+    halted_ = top.halted;
+    if (top.lua) top.lua->RestoreWait(top.wait);
     return true;
+}
+
+uint64_t AsbRunner::BeginEvent(LuaEngine& lua) {
+    if (!loaded_ || event_entry_) return 0;
+    Frame frame{current_file_, pc_, halted_, ++next_event_, &lua, lua.SuspendWait()};
+    callstack_.push_back(std::move(frame));
+    event_entry_ = next_event_;
+    event_revision_ = flow_revision_;
+    return event_entry_;
+}
+
+void AsbRunner::DiscardFlow() {
+    callstack_.clear();
+    event_entry_=0;
+    ++flow_revision_;
+    loaded_=false;
+    halted_=true;
+}
+
+void AsbRunner::EndEvent(uint64_t token) {
+    if (!token || token != event_entry_) return;
+    if (flow_revision_ == event_revision_ && !callstack_.empty() &&
+        callstack_.back().event == token) {
+        Return();
+    }
+    event_entry_ = 0;
+}
+
+std::vector<std::string> AsbRunner::StackFiles() const {
+    std::vector<std::string> files;
+    for (const auto& frame : callstack_) files.push_back(frame.file);
+    if (loaded_) files.push_back(current_file_);
+    return files;
+}
+
+void AsbRunner::ShiftWaitDeadlines(LuaEngine& lua, std::chrono::steady_clock::duration pause) {
+    for (auto& frame : callstack_)
+        if (frame.lua == &lua && frame.wait.timed) frame.wait.deadline += pause;
 }
 
 bool AsbRunner::FindLabel(const std::string &label, size_t *pc) {
@@ -158,6 +209,7 @@ bool AsbRunner::FindLabel(const std::string &label, size_t *pc) {
 }
 
 void AsbRunner::JumpTo(const std::string &label) {
+    ++flow_revision_;
     // A jump re-enters execution (estag chains call the same script again
     // after an earlier [return] halted it — see AsbRunner::Jump's cache path).
     halted_ = false;
@@ -166,6 +218,39 @@ void AsbRunner::JumpTo(const std::string &label) {
     size_t pc = 0;
     if (FindLabel(label, &pc)) pc_ = pc;
     else Log(kLogWarn, "asb: jump target not found: " + label);
+}
+
+bool AsbRunner::ExecuteLine(LuaEngine& lua) {
+    if (!loaded_ || halted_ || pc_ >= script_.lines.size()) { halted_ = true; return false; }
+    const uint64_t before = flow_revision_;
+    const AsbLine line = Current(); // callbacks can replace script_ in this call
+    auto attr = [&](const char* name) {
+        for (const auto& kv : line.attrs) if (kv.first == name) return kv.second;
+        return std::string();
+    };
+    if (line.is_label) {
+        Advance();
+        return true;
+    }
+    if (line.command == "\x02LUA") lua.DoString(attr("code"), "asb:lua");
+    else if (line.command == "calllua") lua.CallGlobal(attr("function"));
+    else if (line.command == "jump" || line.command == "call") {
+        const std::string file = attr("file").empty() ? current_file_ : attr("file");
+        const bool ok = line.command == "call" ? Call(file, attr("label")) : Jump(file, attr("label"));
+        if (!ok) Halt();
+        return ok;
+    } else if (line.command == "stop" && line.attrs.empty()) {
+        Halt();
+        lua.NotifyScriptStop();
+        return true;
+    } else if (line.command == "return") {
+        if (!Return()) Halt();
+        return true;
+    } else if (line.command != "stop") {
+        lua.DispatchTag(line.command, line.attrs);
+    }
+    if (before == flow_revision_ && !halted_) Advance();
+    return true;
 }
 
 // ---- plain .iet text → AsbScript ----

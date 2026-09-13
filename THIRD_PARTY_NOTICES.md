@@ -15,3 +15,10 @@ own source code under `src/`, `CMakeLists.txt`, and the documentation.
 - Author: Sean Barrett (nothings.org)
 - License: dual public-domain / MIT (see the file header comment).
 - Vendored as-is; used for Ogg Vorbis decoding.
+
+## External build dependencies (not vendored)
+- **zlib** — required for native save (BOWS/ARCV), PSB/MDF and PNG snapshots.
+  zlib license.
+- **FFmpeg** (libavformat/libavcodec/libavutil/libswscale/libswresample) —
+  optional (`ARTC_ENABLE_FFMPEG`); used only for movie playback. Distributed
+  under its own LGPL/GPL terms depending on the build configuration.
