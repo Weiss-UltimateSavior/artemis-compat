@@ -1,5 +1,6 @@
 #include "render/compositor.h"
 #include "render/line_break.h"
+#include "render/layer_kind.h"
 #include "pack/pack_manager.h"
 #include "pack/pf8_reader.h"
 #include "log/logger.h"
@@ -671,8 +672,8 @@ std::string Compositor::DescribeDrawList(size_t max_layers) const {
         if (!ev || !l->texture) continue;
         if (n++ >= max_layers) { out += " ..."; break; }
         char buf[160];
-        std::snprintf(buf, sizeof(buf), " %s(%d,%d %dx%d a=%.2f)", l->id.c_str(), (int)ex, (int)ey,
-                      (int)ew, (int)eh, ea);
+        std::snprintf(buf, sizeof(buf), " %s[%s](%d,%d %dx%d a=%.2f)", l->id.c_str(),
+                      KindName(KindOf(*l)), (int)ex, (int)ey, (int)ew, (int)eh, ea);
         out += buf;
     }
     return out;

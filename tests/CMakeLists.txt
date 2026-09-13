@@ -49,6 +49,10 @@ add_executable(block_decode_regressions block_decode_regressions.cpp)
 target_link_libraries(block_decode_regressions PRIVATE artemis_core)
 add_test(NAME block_decode_regressions COMMAND block_decode_regressions)
 
+add_executable(layer_kind_regressions layer_kind_regressions.cpp)
+target_link_libraries(layer_kind_regressions PRIVATE artemis_core)
+add_test(NAME layer_kind_regressions COMMAND layer_kind_regressions)
+
 # Video decoding only when the core was built with FFmpeg and the tool is
 # available to synthesize a fixture.
 get_target_property(ARTC_DEFINES artemis_deps INTERFACE_COMPILE_DEFINITIONS)
