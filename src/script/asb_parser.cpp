@@ -1,5 +1,6 @@
 #include "script/asb_parser.h"
 #include "script/lua_engine.h"
+#include "script/preprocess.h"
 
 #include "log/logger.h"
 #include "pack/pack_manager.h"
@@ -89,7 +90,8 @@ bool AsbRunner::Load(const std::vector<uint8_t> &image, const std::string &label
                         image[2] == 'B' && image[3] == '\0';
     const bool ok = binary ? ParseAsb(image, &script_)
                            : ParseIetScript(
-                                 std::string(image.begin(), image.end()), &script_);
+                                 PreprocessScript(std::string(image.begin(), image.end())),
+                                 &script_);
     if (!ok) {
         Log(kLogError, "asb: image parse failed");
         return false;

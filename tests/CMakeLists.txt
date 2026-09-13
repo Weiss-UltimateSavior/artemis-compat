@@ -29,6 +29,10 @@ add_executable(pf8_regressions pf8_regressions.cpp)
 target_link_libraries(pf8_regressions PRIVATE artemis_core)
 add_test(NAME pf8_regressions COMMAND pf8_regressions)
 
+add_executable(preprocess_regressions preprocess_regressions.cpp)
+target_link_libraries(preprocess_regressions PRIVATE artemis_core)
+add_test(NAME preprocess_regressions COMMAND preprocess_regressions)
+
 # Video decoding only when the core was built with FFmpeg and the tool is
 # available to synthesize a fixture.
 get_target_property(ARTC_DEFINES artemis_deps INTERFACE_COMPILE_DEFINITIONS)

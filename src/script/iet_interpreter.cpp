@@ -1,4 +1,5 @@
 #include "script/iet_interpreter.h"
+#include "script/preprocess.h"
 #include "log/logger.h"
 
 #include <algorithm>
@@ -95,7 +96,9 @@ bool IetRunner::Run(const std::string &path) {
         Log(kLogError, "iet: not found in packs: " + path);
         return false;
     }
-    const std::string text(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    const std::string text =
+        PreprocessScript(std::string(reinterpret_cast<const char *>(bytes.data()),
+                                     bytes.size()));
 
     const auto lines = SplitLines(text);
     bool in_lua = false;

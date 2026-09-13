@@ -1,6 +1,7 @@
 #include "script/lua_engine.h"
 #include "script/asb_parser.h"
 #include "script/expression.h"
+#include "script/preprocess.h"
 #include "render/compositor.h"
 #include "render/stb_image.h"
 #include "audio/audio.h"
@@ -587,6 +588,15 @@ bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
     audio_ = new Audio();
     audio_->Init(packs);
     sounds_ = new AudioChannels(*audio_);
+    // Optional project tag.ini: positional parameter names for line tags.
+    {
+        std::vector<uint8_t> tag_ini;
+        if ((packs && packs->Read("tag.ini", tag_ini)) ||
+            (packs && packs->Read("system/tag.ini", tag_ini)))
+            InstallTagIniFromText(std::string(tag_ini.begin(), tag_ini.end()));
+        else
+            ClearTagIni();
+    }
     L_ = luaL_newstate();
     if (!L_) return false;
     init_time_ = std::chrono::steady_clock::now();
