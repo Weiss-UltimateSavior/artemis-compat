@@ -2322,8 +2322,13 @@ void LuaEngine::DispatchClick(float x, float y) {
     }
     std::vector<std::pair<std::string, std::string>> attrs;
     if (id.empty() || !FindLayerEvent(id, "click", &attrs)) {
-        if (onpush_.count(1)) FireOnPush(1);
-        else AdvanceByInput();
+        // No button under the pointer: clear the framework's active-button
+        // cursor before routing the CLICK key. keyconfig only closes stateful
+        // UI (e.g. the volume slider's mwmute branch) when `func` is nil, and
+        // a stale cursor otherwise keeps the click bound to the last button.
+        DoString("if btn then btn.cursor=nil end", "clear-btn-cursor");
+        if (onpush_.count(1)) { Log(kLogInfo, "click: fallback -> onpush key 1"); FireOnPush(1); }
+        else { Log(kLogInfo, "click: fallback -> advance"); AdvanceByInput(); }
         return;
     }
     if (!FilterEvent("lyevent", attrs)) return;
@@ -2348,6 +2353,7 @@ void LuaEngine::DispatchClick(float x, float y) {
     if (lua_isstring(L_, -1)) exec = lua_tostring(L_, -1);
     lua_pop(L_, 1);
     if (!exec.empty()) {
+        Log(kLogInfo, "click: button exec path id='" + id + "' exec='" + exec + "'");
         // A real engine click event carries the pressed button as `btn` —
         // button handlers like langsel_click read p.btn (-> getBtnInfo) to
         // act. Our lyevent attrs only have `key`, so fold the key in.
@@ -2359,6 +2365,7 @@ void LuaEngine::DispatchClick(float x, float y) {
             if (kv.first == "click" && !kv.second.empty())
                 CallEvent(kv.second, click_attrs, false);
     } else {
+        Log(kLogInfo, "click: button cursor-sync path id='" + id + "' -> onpush key 1");
         for (const auto &kv : attrs)     // cursor-sync (function = btn_clickex)
             if (kv.first == "function" && !kv.second.empty())
                 CallEvent(kv.second, attrs, true);
@@ -2376,10 +2383,22 @@ void LuaEngine::FireOnPush(int key) {
     const uint64_t event=script_runner_ ? script_runner_->BeginEvent(*this) : 0;
     for (const auto &kv : attrs)
         if (kv.first == "function" && !kv.second.empty()) {
+            Log(kLogInfo, "onpush: key=" + std::to_string(key) + " -> " + kv.second);
             CallEvent(kv.second, attrs, false);
             break;
         }
     if (script_runner_) script_runner_->EndEvent(event);
+    // Diagnostic: the framework's key routing decides close/toggle from these
+    // flags (keyconfig.lua branches: waitflag -> mwmute -> keycode).
+    if (key == 1 && L_) {
+        DoString("local f=flg or {}; _artc_probe='mwmute='..tostring(f.mwmute)..' wait='.."
+                 "tostring(f.waitflag)..' tx='..tostring(f.txclick)..' ui='..tostring(f.ui)",
+                 "probe");
+        lua_getglobal(L_, "_artc_probe");
+        if (lua_isstring(L_, -1))
+            Log(kLogInfo, std::string("onpush probe: ") + lua_tostring(L_, -1));
+        lua_pop(L_, 1);
+    }
 }
 
 // ---- draggable layers (framework slider pins) ----
