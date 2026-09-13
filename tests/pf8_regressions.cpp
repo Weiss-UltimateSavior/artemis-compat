@@ -6,6 +6,7 @@
 
 #include "pack/pf8_reader.h"
 #include "pack/sha1.h"
+#include "util/encoding.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -153,11 +154,30 @@ void TestClearTextPf2() {
     std::filesystem::remove(path);
 }
 
+void TestShiftJisLookup() {
+    // A container stores CP932 raw bytes for a Japanese name; a UTF-8 script
+    // path must still resolve through the encoding fallback.
+    const std::string utf8 = "背景/タイトル.png";
+    std::string cp932;
+    Check(artc::Utf8ToShiftJis(utf8, cp932), "encode cp932");
+    std::vector<FileSpec> files = {{cp932, {'J'}}};
+    const std::string path = WriteTemp(BuildPack('2', files), "artc_sjis_test.pfs");
+    artc::Pf8Reader reader;
+    Check(reader.Open(path), "open cp932-named pack");
+    artc::Pf8Entry e;
+    Check(reader.Find(utf8, e), "utf8 query matches cp932 entry");
+    std::vector<uint8_t> got;
+    Check(reader.Read(utf8, got), "read via utf8 query");
+    Check(got == std::vector<uint8_t>({'J'}), "cp932 entry payload");
+    std::filesystem::remove(path);
+}
+
 } // namespace
 
 int main() {
     TestEncryptedCaseAndRange();
     TestClearTextPf2();
+    TestShiftJisLookup();
     if (g_failures == 0) std::cout << "pf8_regressions: ok\n";
     return g_failures == 0 ? 0 : 1;
 }

@@ -1,6 +1,7 @@
 #include "pack/pf8_reader.h"
 #include "pack/sha1.h"
 #include "util/byteutil.h"
+#include "util/encoding.h"
 
 #include <cstdio>
 #include <cstring>
@@ -97,6 +98,16 @@ bool Pf8Reader::Find(const std::string &name, Pf8Entry &out) const {
     const std::string want = NormalizeLookupKey(name);
     for (const Pf8Entry &e : entries_) {
         if (NormalizeLookupKey(e.name) == want) { out = e; return true; }
+    }
+    // Shift_JIS fallback: a UTF-8 query against a CP932-named container.
+    std::string cp932;
+    if (Utf8ToShiftJis(name, cp932)) {
+        const std::string want2 = NormalizeLookupKey(cp932);
+        if (want2 != want) {
+            for (const Pf8Entry &e : entries_) {
+                if (NormalizeLookupKey(e.name) == want2) { out = e; return true; }
+            }
+        }
     }
     return false;
 }
