@@ -142,16 +142,47 @@ struct Reader {
         const size_t header_len=doc.version==4?56:doc.version==3?44:40;
         if(doc.bytes.size()<header_len)Fail("truncated PSB header");
         if(encryption_flags&1) {
-            // The header key is derived from the canonical header length: the
-            // encrypted word at offset 8 must decode to that length, which in
-            // turn yields the keystream seed (FreeMote/NekoMiko v4 layout).
-            uint32_t encrypted=0;
-            for(int i=0;i<4;++i)encrypted|=uint32_t(doc.bytes[8+i])<<(8*i);
-            const uint32_t a=kKey1^(kKey1<<11);
-            const uint32_t first=encrypted^uint32_t(header_len);
-            const uint32_t rhs=first^a^(a>>8);
-            const uint32_t key4=rhs^(rhs>>19);
-            PsbCipher(key4).Apply(doc.bytes.data()+8,header_len-8);
+            // Try seeds against a copy of the header; commit only when the
+            // decrypted header passes its adler32 checksum (a definitive check,
+            // so a wrong seed cannot slip through). We first try an explicit
+            // ARTC_EMOTE_SEED override, then derive the seed from the canonical
+            // header length (the encrypted word at offset 8 must decode to the
+            // plain header length).
+            const uint8_t *src=doc.bytes.data();
+            std::vector<uint8_t> header(src,src+header_len);
+            auto checksum_ok=[&](const std::vector<uint8_t>& h)->bool {
+                if(doc.version<3) return true; // v2 has no header checksum
+                uint32_t a=1,b=0;
+                auto feed=[&](size_t from,size_t to) {
+                    for(size_t i=from;i<to;++i){a=(a+h[i])%65521u;b=(b+a)%65521u;}
+                };
+                feed(8,40);
+                if(header_len>=56) feed(44,header_len);
+                const uint32_t want=uint32_t(h[40])|(uint32_t(h[41])<<8)|
+                                    (uint32_t(h[42])<<16)|(uint32_t(h[43])<<24);
+                return ((b<<16)|a)==want;
+            };
+            auto try_seed=[&](uint32_t seed)->bool {
+                std::vector<uint8_t> h=header;
+                PsbCipher(seed).Apply(h.data()+8,header_len-8);
+                if(!checksum_ok(h)) return false;
+                header.swap(h);return true;
+            };
+            bool decrypted=false;
+            if(const char* e=std::getenv("ARTC_EMOTE_SEED")) {
+                char* end=nullptr;const unsigned long v=std::strtoul(e,&end,0);
+                if(end && *end=='\0' && v) decrypted=try_seed(uint32_t(v));
+            }
+            if(!decrypted) {
+                uint32_t encrypted=0;
+                for(int i=0;i<4;++i)encrypted|=uint32_t(src[8+i])<<(8*i);
+                const uint32_t a=kKey1^(kKey1<<11);
+                const uint32_t first=encrypted^uint32_t(header_len);
+                const uint32_t rhs=first^a^(a>>8);
+                decrypted=try_seed(rhs^(rhs>>19));
+            }
+            if(!decrypted)Fail("encrypted PSB: header key/checksum mismatch");
+            std::copy(header.begin(),header.end(),doc.bytes.begin());
         }
         const uint32_t header_length=Header(8);
         if(header_length!=0 && header_length!=header_len)Fail("unexpected PSB header length");

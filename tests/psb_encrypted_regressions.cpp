@@ -8,6 +8,7 @@
 #include "pack/psb.h"
 #include "emote_scene_fixture.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -43,6 +44,18 @@ void Put32(std::vector<uint8_t> &b, size_t at, uint32_t v) {
     for (int i = 0; i < 4; ++i) b[at + i] = static_cast<uint8_t>(v >> (8 * i));
 }
 
+uint32_t Adler32(const uint8_t *p, size_t n) {
+    uint32_t a = 1, b = 0;
+    for (size_t i = 0; i < n; ++i) {
+        a = (a + p[i]) % 65521u;
+        b = (b + a) % 65521u;
+    }
+    return (b << 16) | a;
+}
+
+// Sign the v3 header payload ([8,40)) into the checksum word at offset 40.
+void SignV3Header(std::vector<uint8_t> &plain) { Put32(plain, 40, Adler32(plain.data() + 8, 32)); }
+
 artc::PsbDocument SampleDocument() {
     artc::PsbDocument doc;
     doc.root.type = artc::PsbValue::Object;
@@ -53,20 +66,43 @@ artc::PsbDocument SampleDocument() {
     return doc;
 }
 
-void TestEncryptedHeaderRoundTrip() {
+std::vector<uint8_t> EncryptedFixture(uint32_t seed) {
     const artc::PsbDocument doc = SampleDocument();
     std::vector<uint8_t> plain = emote_fixture::EncodePsb(doc);
-    Check(plain.size() >= 44, "v3 header present");
-    Put32(plain, 8, 44);       // header_length (the inference anchor)
+    Put32(plain, 8, 44);       // header_length (anchor derived by the decoder)
+    SignV3Header(plain);       // adler32 of [8,40) -> offset 40
     plain[6] = 1;              // encryption_flags
     plain[7] = 0;
-    Cipher(0x0BADF00Du).Apply(plain.data() + 8, 44 - 8);
+    Cipher(seed).Apply(plain.data() + 8, 44 - 8);
+    return plain;
+}
 
+void TestEncryptedHeaderRoundTrip() {
+    std::vector<uint8_t> bytes = EncryptedFixture(0x0BADF00Du);
     artc::PsbDocument decoded;
     std::string error;
-    Check(artc::DecodePsb(plain, decoded, error), "decode encrypted header: " + error);
+    Check(artc::DecodePsb(bytes, decoded, error), "decode encrypted header: " + error);
     Check(decoded.root.At("answer").Num(-1) == 42, "encrypted tree preserved (number)");
     Check(decoded.root.At("text").string == "hello", "encrypted tree preserved (string)");
+}
+
+void TestExplicitSeed() {
+    const std::vector<uint8_t> bytes = EncryptedFixture(0x1234ABCDe);
+    ::setenv("ARTC_EMOTE_SEED", "0x1234abcd", 1);
+    artc::PsbDocument decoded;
+    std::string error;
+    const bool ok = artc::DecodePsb(bytes, decoded, error);
+    ::unsetenv("ARTC_EMOTE_SEED");
+    Check(ok, "explicit seed decodes: " + error);
+    Check(decoded.root.At("answer").Num(-1) == 42, "explicit seed tree preserved");
+}
+
+void TestChecksumRejectsCorruption() {
+    std::vector<uint8_t> bytes = EncryptedFixture(0x0BADF00Du);
+    bytes[20] ^= 0x01; // corrupt an encrypted header word
+    artc::PsbDocument decoded;
+    std::string error;
+    Check(!artc::DecodePsb(bytes, decoded, error), "corrupt header rejected");
 }
 
 void TestPlainStillDecodes() {
@@ -82,6 +118,8 @@ void TestPlainStillDecodes() {
 
 int main() {
     TestEncryptedHeaderRoundTrip();
+    TestExplicitSeed();
+    TestChecksumRejectsCorruption();
     TestPlainStillDecodes();
     if (g_failures == 0) std::cout << "psb_encrypted_regressions: ok\n";
     return g_failures == 0 ? 0 : 1;

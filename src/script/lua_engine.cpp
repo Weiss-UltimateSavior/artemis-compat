@@ -579,6 +579,31 @@ bool LuaEngine::RunEnterFrame() {
     return ok;
 }
 
+// Standard-library harden: keep the scripting surface the frameworks actually
+// use (os.date/io.open/io.close) but drop the process-level host surface and
+// the arbitrary-code loaders. ARTC_LUA_STDLIB=stock skips it for A/B tests.
+namespace {
+void DropFields(lua_State *L, const char *table, const char *const *names, size_t n) {
+    lua_getglobal(L, table);
+    if (!lua_istable(L, -1)) { lua_pop(L, 1); return; }
+    for (size_t i = 0; i < n; ++i) { lua_pushnil(L); lua_setfield(L, -2, names[i]); }
+    lua_pop(L, 1);
+}
+void ApplyLuaStdlibBlockList(lua_State *L) {
+    if (const char *v = std::getenv("ARTC_LUA_STDLIB"); v && std::strcmp(v, "stock") == 0)
+        return;
+    static const char *const kOsBanned[] = {"execute", "exit", "remove", "rename",
+                                            "setlocale", "tmpname", "system"};
+    DropFields(L, "os", kOsBanned, sizeof(kOsBanned) / sizeof(kOsBanned[0]));
+    static const char *const kIoBanned[] = {"popen", "tmpfile", "input", "output"};
+    DropFields(L, "io", kIoBanned, sizeof(kIoBanned) / sizeof(kIoBanned[0]));
+    static const char *const kGlobalBanned[] = {"dofile", "loadfile", "loadstring", "load"};
+    for (const char *n : kGlobalBanned) { lua_pushnil(L); lua_setglobal(L, n); }
+    static const char *const kPkgBanned[] = {"loadlib", "loaders", "preload", "seeall"};
+    DropFields(L, "package", kPkgBanned, sizeof(kPkgBanned) / sizeof(kPkgBanned[0]));
+}
+} // namespace
+
 bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
                      const std::string &osName, int screenWidth, int screenHeight,
                      Compositor *compositor) {
@@ -601,6 +626,7 @@ bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
     if (!L_) return false;
     init_time_ = std::chrono::steady_clock::now();
     luaL_openlibs(L_);
+    ApplyLuaStdlibBlockList(L_);
     // register the pluto serializer (save/load data format)
     if (luaL_dostring(L_, PLUTO_LUA_SRC) != 0) {
         Log(kLogError, std::string("pluto registration failed: ") + lua_tostring(L_, -1));
