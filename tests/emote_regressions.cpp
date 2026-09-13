@@ -272,7 +272,9 @@ int main(int argc,char** argv) {
         Check(!artc::DecodePsb(cut,doc,error) && doc.root.At("a").array.size()==4,"truncated PSB leaves previous document intact");
     }
     auto broken=fixture;broken[6]=1;
-    Check(!artc::DecodePsb(broken,doc,error) && error.find("encrypted")!=std::string::npos,"encrypted PSB reports unsupported");
+    // A forged encryption flag with a plain body fails header validation (the
+    // real encrypted-header path is covered by psb_encrypted_regressions).
+    Check(!artc::DecodePsb(broken,doc,error) && !error.empty(),"forged encrypted PSB is rejected");
     // The root's sole value offset loops back to the root dictionary.
     broken=fixture;broken[36]=255;broken[37]=255;broken[38]=255;broken[39]=255;
     Check(!artc::DecodePsb(broken,doc,error),"PSB rejects overflowing offsets");

@@ -115,11 +115,11 @@ com.ies_net.artemis.debug.DebugBridge.nativeInstall(
 
 ## 非目标 / 已知缺口
 
-- E-mote 完整 SDK 等价：网格/stencil、复杂继承/深度/混合、物理、加密 PSB 与公开复杂模型仍不支持
+- E-mote 完整 SDK 等价：网格/stencil 变形、复杂继承/深度/混合、物理与公开复杂模型仍不支持（加密头 PSB v2–v4、HOLD/插值、嵌套 motion 与 id 链变换继承已支持）
 - 原版任意 VM 状态快照、BOWS/BOWG **双向**写出、内嵌截图导入（自身 ARCV 检查点已可重启回读）
-- HLSL、全部中间缓冲缓存模式、普通图片 `mask` 与蒙版命中检测
+- HLSL 仅覆盖已验证游戏用到的 Artemis 运行时子集（register sampler、`ps()`、`tex2D`、常用内建），非通用 D3D HLSL 编译器
 - 混合字体/嵌套样式、竖排、复杂 ruby 分配与完整字形塑形
-- `.050+.051…` 巨大数据卷（`pf6` 旧代格式）读取器
+- `.050+.051…` 巨大数据卷（`pf6` 旧代格式）读取器（`pf2`/明文 PF6 布局已支持）
 - 密钥派生算法为独立课题；个别标题自定义魔数/密钥不在自动派生范围
 
 ## 许可
