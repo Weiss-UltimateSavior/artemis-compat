@@ -336,6 +336,15 @@ void Compositor::SetIndentRules(const std::string &pair, int range, bool nest) {
     indent_nest_ = nest;
 }
 
+void Compositor::SetLayerMesh(const std::string &id, const std::vector<float> &vertices) {
+    if (id.empty()) return;
+    for (auto &l : layers_)
+        if (l.id == id) {
+            if (l.mesh != vertices) { l.mesh = vertices; ++revision_; }
+            return;
+        }
+}
+
 void Compositor::SetTextTween(const std::string& id, const std::map<std::string, std::string>& attrs) {
     if (id.empty()) return;
     const auto get = [&](const char* key) { const auto it=attrs.find(key); return it==attrs.end() ? std::string() : it->second; };
@@ -1566,6 +1575,30 @@ void Compositor::Draw() {
                 glDrawArrays(GL_TRIANGLES,0,vertices.size()/5);
                 glDisableVertexAttribArray(prog_.a_opacity);
                 glVertexAttrib1f(prog_.a_opacity,1);
+            }
+            return;
+        }
+        if (!l->mesh.empty() && l->mesh.size() % 4 == 0) {
+            // Warped triangle list (E-mote mesh): transform every vertex and
+            // draw with per-vertex uv.
+            std::vector<float> vertices;
+            vertices.reserve(l->mesh.size() / 4 * 5);
+            for (size_t i = 0; i + 3 < l->mesh.size(); i += 4) {
+                const auto p = transform.Point(l->mesh[i], l->mesh[i + 1]);
+                vertices.insert(vertices.end(),
+                                {p.first, p.second, l->mesh[i + 2], l->mesh[i + 3], 1.0f});
+            }
+            if (!vertices.empty()) {
+                glUniform1f(prog_.u_alpha, ea);
+                glVertexAttribPointer(prog_.a_pos, 2, GL_FLOAT, GL_FALSE, 20, vertices.data());
+                glEnableVertexAttribArray(prog_.a_pos);
+                glVertexAttribPointer(prog_.a_uv, 2, GL_FLOAT, GL_FALSE, 20, vertices.data() + 2);
+                glEnableVertexAttribArray(prog_.a_uv);
+                glVertexAttribPointer(prog_.a_opacity, 1, GL_FLOAT, GL_FALSE, 20, vertices.data() + 4);
+                glEnableVertexAttribArray(prog_.a_opacity);
+                glDrawArrays(GL_TRIANGLES, 0, vertices.size() / 5);
+                glDisableVertexAttribArray(prog_.a_opacity);
+                glVertexAttrib1f(prog_.a_opacity, 1);
             }
             return;
         }

@@ -8,10 +8,14 @@ struct EmoteSceneLayer {
     std::string key,source,icon;
     double x=0,y=0,angle=0,scale_x=1,scale_y=1,opacity=1,origin_x=0,origin_y=0;
     bool visible=true;
+    // Per-icon Bezier mesh warp: interleaved (warped_x, warped_y, u, v) in
+    // normalized icon space (triangles, 4 floats per vertex). Empty = affine.
+    std::vector<float> mesh;
 };
-// Frame evaluator/renderer for plain image/layout/child-motion nodes. Unsupported
-// mesh, stencil, physics or transform inheritance is rejected before changing
-// the displayed scene. This deliberately does not advertise complete SDK support.
+// Frame evaluator/renderer for plain image/layout/child-motion nodes plus
+// per-icon Bezier mesh warp (DXT5/BC7/RGBA8 atlases). Stencil/mask composites,
+// physics and non-per-icon mesh propagation are still rejected before changing
+// the displayed scene; this does not advertise complete SDK support.
 class EmoteScene {
 public:
     bool Load(std::shared_ptr<const EmoteModel> model,std::string& error);

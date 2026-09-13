@@ -78,6 +78,19 @@ void TestBuildGrid() {
     Check(Close(xy[xy.size() - 2], 1.0f) && Close(xy.back(), 1.0f), "last vertex");
 }
 
+void TestBuildWarpedMesh() {
+    const auto grid = Identity(4);
+    int side = 0;
+    artc::ParseMeshPatch(grid, &side);
+    std::vector<float> xyuv;
+    Check(artc::BuildWarpedMesh(grid, side, artc::kEmoteMeshSide, &xyuv), "build warped mesh");
+    const int cells = artc::kEmoteMeshSide - 1;
+    Check(xyuv.size() == static_cast<size_t>(cells) * cells * 6 * 4, "warped mesh size");
+    // First triangle's first vertex: identity position and identity uv.
+    Check(Close(xyuv[0], 0.0f) && Close(xyuv[1], 0.0f), "warped first position");
+    Check(Close(xyuv[2], 0.0f) && Close(xyuv[3], 0.0f), "warped first uv");
+}
+
 } // namespace
 
 int main() {
@@ -85,6 +98,7 @@ int main() {
     TestIdentityBilinear();
     TestBezierCorners();
     TestBuildGrid();
+    TestBuildWarpedMesh();
     if (g_failures == 0) std::cout << "emote_mesh_regressions: ok\n";
     return g_failures == 0 ? 0 : 1;
 }

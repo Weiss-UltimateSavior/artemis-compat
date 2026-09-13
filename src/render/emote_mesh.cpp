@@ -100,4 +100,23 @@ bool BuildDeformedGrid(const std::vector<float> &points, int side, int side_out,
     return true;
 }
 
+bool BuildWarpedMesh(const std::vector<float> &points, int side, int side_out,
+                     std::vector<float> *out_xyuv) {
+    if (!out_xyuv) return false;
+    std::vector<float> xy;
+    std::vector<uint32_t> indices;
+    if (!BuildDeformedGrid(points, side, side_out, &xy, &indices)) return false;
+    out_xyuv->clear();
+    out_xyuv->reserve(indices.size() * 4);
+    for (uint32_t v : indices) {
+        const int i = static_cast<int>(v % side_out);
+        const int j = static_cast<int>(v / side_out);
+        out_xyuv->push_back(xy[static_cast<size_t>(v) * 2]);
+        out_xyuv->push_back(xy[static_cast<size_t>(v) * 2 + 1]);
+        out_xyuv->push_back(static_cast<float>(i) / (side_out - 1));
+        out_xyuv->push_back(static_cast<float>(j) / (side_out - 1));
+    }
+    return true;
+}
+
 } // namespace artc

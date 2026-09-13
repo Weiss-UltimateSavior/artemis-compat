@@ -65,6 +65,10 @@ struct Layer {
     std::string text;
     std::vector<TextGlyph> glyphs;
     std::vector<TextTween> text_in;
+    // Optional warped triangle list (interleaved x,y,u,v in layer-local
+    // pixels); when non-empty the layer is drawn as triangles instead of a quad
+    // (E-mote per-icon mesh warp).
+    std::vector<float> mesh;
 };
 
 class Compositor {
@@ -104,6 +108,9 @@ public:
     void SetTextTween(const std::string& id, const std::map<std::string, std::string>& attrs);
     double PendingTextMs(double now_ms) const;
     bool FinishText(double now_ms);
+    // Override a layer's geometry with a warped triangle list (x,y,u,v per
+    // vertex, layer-local pixels). Empty restores the plain quad.
+    void SetLayerMesh(const std::string& id, const std::vector<float>& vertices);
 
     // GL draw (called from the render loop on the engine thread). Draws all
     // visible layers, then invokes the present callback ([flip] semantics).

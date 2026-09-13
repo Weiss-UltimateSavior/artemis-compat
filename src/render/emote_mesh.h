@@ -28,4 +28,10 @@ bool SampleMeshPatch(const std::vector<float> &points, int side, float u, float 
 bool BuildDeformedGrid(const std::vector<float> &points, int side, int side_out,
                        std::vector<float> *out_xy, std::vector<uint32_t> *out_indices);
 
+// Expand a patch into a triangle list with interleaved (warped_x, warped_y,
+// u, v): positions are the warped normalized grid, uv the identity grid the
+// texture is sampled through. Used directly by the compositor mesh path.
+bool BuildWarpedMesh(const std::vector<float> &points, int side, int side_out,
+                     std::vector<float> *out_xyuv);
+
 } // namespace artc

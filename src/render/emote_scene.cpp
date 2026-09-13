@@ -1,5 +1,6 @@
 #include "render/emote_scene.h"
 #include "render/compositor.h"
+#include "render/emote_mesh.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -96,6 +97,15 @@ struct Evaluator {
                 out.opacity=std::clamp(Value(sampled,"opa",255)/255.0,0.0,1.0);
                 out.origin_x=Value(sampled,"ox",0);out.origin_y=Value(sampled,"oy",0);
                 const auto& content=sampled.left->At("content");const auto& src=content.At("src").string;
+                // Per-icon Bezier mesh warp: warp the icon's normalized grid.
+                const auto& mesh=content.At("mesh");
+                if(mesh.type==PsbValue::Object) {
+                    std::vector<float> bp;
+                    for(const auto& x:mesh.At("bp").array)bp.push_back(float(x.number));
+                    int side=0;
+                    if(!ParseMeshPatch(bp,&side) || !BuildWarpedMesh(bp,side,8,&out.mesh))
+                        throw std::runtime_error("invalid E-mote mesh patch");
+                }
                 if(src.rfind("src/",0)==0) {const auto path=Path(src,"src/");out.source=path.first;out.icon=path.second;}
                 if(layers.size()>=4096)throw std::runtime_error("too many E-mote scene layers");
                 layers.push_back(out);
@@ -127,8 +137,8 @@ void Validate(const EmoteModel& model,const std::string& chara,const std::string
             if(type!=0 && type!=2 && type!=3)throw std::runtime_error("unsupported E-mote node type at "+n.At("label").string);
             if(Num(n.At("coordinate")) || Num(n.At("groundCorrection")))
                 throw std::runtime_error("unsupported E-mote coordinate/ground correction");
-            if(Num(n.At("meshTransform")) || Num(n.At("meshCombine")) || Num(n.At("stencilType")))
-                throw std::runtime_error("E-mote mesh/stencil node requires the deformation renderer: "+n.At("label").string);
+            if(Num(n.At("stencilType")))
+                throw std::runtime_error("E-mote stencil node requires the deformation renderer: "+n.At("label").string);
             if(n.At("inheritMask").type!=PsbValue::Null && Num(n.At("inheritMask"))!=33556476)
                 throw std::runtime_error("unsupported E-mote transform inheritance");
             const auto& order=n.At("transformOrder").array;
@@ -140,13 +150,20 @@ void Validate(const EmoteModel& model,const std::string& chara,const std::string
                 if(time<previous || time<0 || (ft!=0 && ft!=2 && ft!=3))throw std::runtime_error("unsupported E-mote scene keyframe");
                 previous=time;if(ft==0)continue;
                 const auto& c=f.At("content");
-                const std::set<std::string> supported={"mask","src","coord","angle","zx","zy","opa","ox","oy","bm","motion"};
+                const std::set<std::string> supported={"mask","src","coord","angle","zx","zy","opa","ox","oy","bm","motion","mesh"};
                 for(const auto& field:c.object)if(!supported.count(field.first))throw std::runtime_error("unsupported E-mote content: "+field.first);
                 for(const char* field:{"mask","angle","zx","zy","opa","ox","oy","bm"})Num(c.At(field));
                 for(const auto& coordinate:c.At("coord").array)Num(coordinate);
                 if(Num(c.At("bm"))!=0 || (c.At("coord").array.size()>2 && Num(c.At("coord").array[2])!=0))
                     throw std::runtime_error("unsupported E-mote blend/depth");
                 const auto& src=c.At("src").string;
+                // A content mesh patch must be a well-formed square grid.
+                const auto& mesh=c.At("mesh");
+                if(mesh.type==PsbValue::Object) {
+                    std::vector<float> bp;
+                    for(const auto& x:mesh.At("bp").array) { if(x.type!=PsbValue::Number) throw std::runtime_error("invalid E-mote mesh point"); bp.push_back(float(x.number)); }
+                    int side=0;if(!ParseMeshPatch(bp,&side))throw std::runtime_error("invalid E-mote mesh patch shape");
+                } else if(mesh.type!=PsbValue::Null) throw std::runtime_error("invalid E-mote mesh");
                 if(src.rfind("src/",0)==0) {
                     auto key=Path(src,"src/");
                     if(!images.count(key)) {EmoteImage image;std::string error;
@@ -224,6 +241,18 @@ bool EmoteScene::Render(Compositor& c,const std::string& id,double frame,
             }
             c.SetProps(part,{{"left",std::to_string(-image.origin_x-l.origin_x)},
                 {"top",std::to_string(-image.origin_y-l.origin_y)}});
+            if(!l.mesh.empty()) {
+                // Scale the normalized warped grid into icon-local pixels; uv
+                // stays the identity grid the icon texture is sampled through.
+                std::vector<float> verts;verts.reserve(l.mesh.size());
+                for(size_t i=0;i+3<l.mesh.size();i+=4) {
+                    verts.push_back(l.mesh[i]*image.width);
+                    verts.push_back(l.mesh[i+1]*image.height);
+                    verts.push_back(l.mesh[i+2]);
+                    verts.push_back(l.mesh[i+3]);
+                }
+                c.SetLayerMesh(part,verts);
+            } else c.SetLayerMesh(part,{});
         }
     }
     installed_layers_=std::move(current);return true;

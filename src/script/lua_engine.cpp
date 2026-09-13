@@ -597,7 +597,10 @@ void ApplyLuaStdlibBlockList(lua_State *L) {
     DropFields(L, "os", kOsBanned, sizeof(kOsBanned) / sizeof(kOsBanned[0]));
     static const char *const kIoBanned[] = {"popen", "tmpfile", "input", "output"};
     DropFields(L, "io", kIoBanned, sizeof(kIoBanned) / sizeof(kIoBanned[0]));
-    static const char *const kGlobalBanned[] = {"dofile", "loadfile", "loadstring", "load"};
+    // NOTE: loadstring stays reachable — the pluto save codec (src/script/
+    // pluto.lua) reconstructs persisted functions through it. dofile/loadfile
+    // (host file loaders) are still dropped.
+    static const char *const kGlobalBanned[] = {"dofile", "loadfile"};
     for (const char *n : kGlobalBanned) { lua_pushnil(L); lua_setglobal(L, n); }
     static const char *const kPkgBanned[] = {"loadlib", "loaders", "preload", "seeall"};
     DropFields(L, "package", kPkgBanned, sizeof(kPkgBanned) / sizeof(kPkgBanned[0]));
