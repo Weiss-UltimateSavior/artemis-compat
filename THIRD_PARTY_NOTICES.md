@@ -16,6 +16,12 @@ own source code under `src/`, `CMakeLists.txt`, and the documentation.
 - License: dual public-domain / MIT (see the file header comment).
 - Vendored as-is; used for Ogg Vorbis decoding.
 
+## bc7decomp (`src/render/bc7decomp.{h,cpp}`)
+- Author: Richard Geldreich, Jr. (richgel999), 2020-03-31
+- Upstream: https://github.com/richgel999/bc7enc
+- License: dual MIT / public domain (full text at the end of `bc7decomp.cpp`).
+- Vendored as-is; used to decode BC7/BPTC E-mote texture atlases.
+
 ## External build dependencies (not vendored)
 - **zlib** — required for native save (BOWS/ARCV), PSB/MDF and PNG snapshots.
   zlib license.

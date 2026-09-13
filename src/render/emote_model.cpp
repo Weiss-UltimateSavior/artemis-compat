@@ -1,4 +1,5 @@
 #include "render/emote_model.h"
+#include "render/block_decode.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -74,19 +75,30 @@ bool EmoteModel::Image(const std::string& source,const std::string& icon,EmoteIm
         std::vector<uint8_t> bytes,palette,decoded;
         if(!document_.ReadResource(image.At("pixel"),bytes))throw std::runtime_error("missing E-mote pixel resource");
         const auto format=image.At("type").string;
-        if(!format.empty() && format!="RGBA8" && format!="CI8")throw std::runtime_error("unsupported E-mote pixel format");
         const bool indexed=format=="CI8";
+        const bool dxt5=format=="DXT5";
+        const bool bc7=format=="BC7";
+        const bool rgba8=format.empty() || format=="RGBA8";
+        if(!rgba8 && !indexed && !dxt5 && !bc7)throw std::runtime_error("unsupported E-mote pixel format");
         // Some RGBA models retain an unused pal reference. Format, not mere
         // presence of that field, determines whether pixels are indices.
         if(indexed && !image.At("palType").string.empty() && image.At("palType").string!="RGBA8")
             throw std::runtime_error("unsupported E-mote palette format");
         if(indexed && (!document_.ReadResource(image.At("pal"),palette) || palette.empty() || palette.size()%4 || palette.size()>1024))
             throw std::runtime_error("invalid E-mote palette");
-        const unsigned stride=indexed?1:4;const size_t count=result.width*result.height;
-        if(image.At("compress").string=="RL") {
-            if(!DecodePsbRl(bytes,count,stride,decoded))throw std::runtime_error("invalid E-mote RL texture");
-        } else if(image.At("compress").string.empty() || image.At("compress").string=="none") {
-            if(bytes.size()!=count*stride)throw std::runtime_error("invalid E-mote raw texture length");decoded=std::move(bytes);
+        const size_t count=result.width*result.height;
+        unsigned stride;size_t raw_bytes;
+        if(dxt5 || bc7) {
+            const size_t blocks=size_t((result.width+3)/4)*size_t((result.height+3)/4);
+            stride=16;raw_bytes=blocks*16; // 16 bytes per 4x4 block
+        } else {
+            stride=indexed?1:4;raw_bytes=count*stride;
+        }
+        const auto compress=image.At("compress").string;
+        if(compress=="RL") {
+            if(!DecodePsbRl(bytes,raw_bytes/stride,stride,decoded))throw std::runtime_error("invalid E-mote RL texture");
+        } else if(compress.empty() || compress=="none") {
+            if(bytes.size()!=raw_bytes)throw std::runtime_error("invalid E-mote raw texture length");decoded=std::move(bytes);
         } else throw std::runtime_error("unsupported E-mote texture compression");
         if(indexed) {
             result.rgba.resize(count*4);
@@ -94,9 +106,13 @@ bool EmoteModel::Image(const std::string& source,const std::string& icon,EmoteIm
                 const size_t at=size_t(decoded[i])*4;if(at+4>palette.size())throw std::runtime_error("E-mote palette index outside table");
                 std::copy_n(palette.data()+at,4,result.rgba.data()+i*4);
             }
-        } else result.rgba=std::move(decoded);
+        } else if(dxt5) DecodeDxt5Blocks(decoded,result.width,result.height,result.rgba);
+        else if(bc7) DecodeBc7Blocks(decoded,result.width,result.height,result.rgba);
+        else result.rgba=std::move(decoded);
         // Desktop PSB color words are A8R8G8B8, i.e. BGRA on little endian.
-        if(spec=="krkr" || spec=="win")for(size_t i=0;i<result.rgba.size();i+=4)std::swap(result.rgba[i],result.rgba[i+2]);
+        // Compressed atlases already decode to natural RGBA and are not swapped.
+        if((spec=="krkr" || spec=="win") && !dxt5 && !bc7)
+            for(size_t i=0;i<result.rgba.size();i+=4)std::swap(result.rgba[i],result.rgba[i+2]);
         out=std::move(result);error.clear();return true;
     } catch(const std::exception& e){error=e.what();return false;}
 }
