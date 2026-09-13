@@ -1036,6 +1036,19 @@ int LuaEngine::l_tag(lua_State *L) {
         lua_pop(L, 3);
         return 0;
     }
+    if (tagname == "lyrename") {
+        lua_getfield(L, 2, "id");
+        const char *id = lua_tostring(L, -1);
+        lua_getfield(L, 2, "to");
+        const char *to = lua_tostring(L, -1);
+        if (id && to && self->compositor_) self->compositor_->RenameLayer(id, to);
+        lua_pop(L, 2);
+        return 0;
+    }
+    if (tagname == "allsoundstop") {
+        if (self->audio_) self->audio_->StopAll();
+        return 0;
+    }
     if (tagname == "debug") {
         lua_getfield(L, 2, "mode");
         lua_getfield(L, 2, "level");

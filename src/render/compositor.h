@@ -82,6 +82,8 @@ public:
     void SetIndentRules(const std::string& pair, int range, bool nest);
     bool LoadImage(const std::string &id, const std::string &file);
     bool LoadShader(const std::string& id, const std::string& file);
+    // [lyrename id=… to=…] — move a layer's state to a new id.
+    bool RenameLayer(const std::string& id, const std::string& to);
     bool SetPixels(const std::string& id, const uint8_t* rgba, int width, int height);
     // Capture the retained stage without redrawing the save/menu overlays.
     bool Snapshot(SnapshotImage& output) const;

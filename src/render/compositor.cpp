@@ -1314,6 +1314,26 @@ void Compositor::DeleteLayer(const std::string &id) {
     }
 }
 
+bool Compositor::RenameLayer(const std::string &id, const std::string &to) {
+    if (id.empty() || to.empty() || id == to) return false;
+    ++revision_;
+    bool any = false;
+    const std::string prefix = id + ".";
+    for (auto &l : layers_) {
+        if (l.id == id) { l.id = to; any = true; }
+        else if (l.id.compare(0, prefix.size(), prefix) == 0) {
+            l.id = to + l.id.substr(id.size());
+            any = true;
+        }
+    }
+    for (auto &tw : tweens_) {
+        if (tw.id == id) tw.id = to;
+        else if (tw.id.compare(0, prefix.size(), prefix) == 0)
+            tw.id = to + tw.id.substr(id.size());
+    }
+    return any;
+}
+
 void Compositor::ReleaseGl() {
     shaders_.ReleaseGl();
     for(auto& mask:masks_)if(mask.second.texture)glDeleteTextures(1,&mask.second.texture);
@@ -1699,6 +1719,20 @@ void Compositor::DeleteLayer(const std::string &id) {
             ++it;
         }
     }
+}
+bool Compositor::RenameLayer(const std::string &id, const std::string &to) {
+    if (id.empty() || to.empty() || id == to) return false;
+    ++revision_;
+    bool any = false;
+    const std::string prefix = id + ".";
+    for (auto &l : layers_) {
+        if (l.id == id) { l.id = to; any = true; }
+        else if (l.id.compare(0, prefix.size(), prefix) == 0) {
+            l.id = to + l.id.substr(id.size());
+            any = true;
+        }
+    }
+    return any;
 }
 bool Compositor::LoadFont(const std::string &file) {
     Log(kLogInfo, "font (host, no raster): " + file);
