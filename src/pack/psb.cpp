@@ -51,10 +51,13 @@ struct Reader {
     void Count(size_t n) {if(n>MaxItems-items)Fail("PSB object limit exceeded");items+=n;}
     std::vector<uint64_t> Array(size_t& p) {
         unsigned width=unsigned(Int(p,1));
+        // count-width marker: 0x0D..0x14 (ArrayN1..ArrayN8), width = marker-0x0C
         if(width<13 || width>20)Fail("invalid PSB packed array");
         const uint64_t count=Int(p,width-12);Count(count);
         width=unsigned(Int(p,1));
-        if(width<13 || width>20)Fail("invalid PSB array width");
+        // entry-width marker: 0x0C..0x14, width = marker-0x0C (0 = all-zero
+        // entries). Some v4 packs emit 0x0C; accepting it matches the format.
+        if(width<12 || width>20)Fail("invalid PSB array width");
         std::vector<uint64_t> a;a.reserve(size_t(count));
         for(size_t i=0;i<count;++i)a.push_back(Int(p,width-12));return a;
     }

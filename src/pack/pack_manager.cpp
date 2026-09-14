@@ -24,12 +24,16 @@ bool PackManager::OpenChain(const std::string &base_path,
     if (!base->Open(base_path, key)) return false;
     packs_.push_back(std::move(base));
 
-    for (uint32_t idx = 0;; ++idx) {
+    // Patch volumes are `<base>.000`, `.001`, ... Some rips ship with a gap
+    // (e.g. a missing `.001`), so scan a bounded index range and load whichever
+    // exist instead of stopping at the first missing volume. Order is preserved
+    // so "later pack wins" still holds.
+    for (uint32_t idx = 0; idx < 64; ++idx) {
         char suffix[16];
         std::snprintf(suffix, sizeof(suffix), ".%03u", idx);
         const std::string patch_path = base_path + suffix;
         auto patch = std::make_unique<Pf8Reader>();
-        if (!patch->Open(patch_path, key)) break; // chain ends at first missing pack
+        if (!patch->Open(patch_path, key)) continue; // skip a gap
         packs_.push_back(std::move(patch));
     }
     return true;

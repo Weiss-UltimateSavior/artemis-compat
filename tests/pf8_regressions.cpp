@@ -5,6 +5,7 @@
 // assets are involved; all payloads are generated here.
 
 #include "pack/pf8_reader.h"
+#include "pack/pack_manager.h"
 #include "pack/sha1.h"
 #include "util/encoding.h"
 
@@ -183,6 +184,27 @@ void TestDecodeToUtf8() {
     Check(artc::DecodeToUtf8(utf8, "", back) && back == utf8, "empty charset passthrough");
 }
 
+void TestPackChainGap() {
+    // base + .000 + .002 (a ripper-missing .001): the chain must still load
+    // .002 instead of stopping at the gap.
+    const std::string base = WriteTemp(BuildPack('8', {{"a.txt", {'A'}}}), "artc_gap_root.pfs");
+    WriteTemp(BuildPack('8', {{"b.txt", {'B'}}}), "artc_gap_root.pfs.000");
+    const std::string vol2 =
+        WriteTemp(BuildPack('8', {{"c.txt", {'C'}}}), "artc_gap_root.pfs.002");
+
+    artc::PackManager packs;
+    Check(packs.OpenChain(base, {}), "open chain with a missing volume");
+    Check(packs.Packs().size() == 3, "chain loads volumes past the gap");
+    std::vector<uint8_t> out;
+    Check(packs.Read("c.txt", out) && out == std::vector<uint8_t>({'C'}),
+          "read a file stored after the gap");
+    Check(packs.Read("a.txt", out) && out == std::vector<uint8_t>({'A'}), "base file still reads");
+
+    std::filesystem::remove(base);
+    std::filesystem::remove(base + ".000");
+    std::filesystem::remove(vol2);
+}
+
 } // namespace
 
 int main() {
@@ -190,6 +212,7 @@ int main() {
     TestClearTextPf2();
     TestShiftJisLookup();
     TestDecodeToUtf8();
+    TestPackChainGap();
     if (g_failures == 0) std::cout << "pf8_regressions: ok\n";
     return g_failures == 0 ? 0 : 1;
 }

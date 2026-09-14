@@ -2388,17 +2388,6 @@ void LuaEngine::FireOnPush(int key) {
             break;
         }
     if (script_runner_) script_runner_->EndEvent(event);
-    // Diagnostic: the framework's key routing decides close/toggle from these
-    // flags (keyconfig.lua branches: waitflag -> mwmute -> keycode).
-    if (key == 1 && L_) {
-        DoString("local f=flg or {}; _artc_probe='mwmute='..tostring(f.mwmute)..' wait='.."
-                 "tostring(f.waitflag)..' tx='..tostring(f.txclick)..' ui='..tostring(f.ui)",
-                 "probe");
-        lua_getglobal(L_, "_artc_probe");
-        if (lua_isstring(L_, -1))
-            Log(kLogInfo, std::string("onpush probe: ") + lua_tostring(L_, -1));
-        lua_pop(L_, 1);
-    }
 }
 
 // ---- draggable layers (framework slider pins) ----
