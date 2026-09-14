@@ -41,9 +41,10 @@ public final class NativeInput {
         return sText == null ? "" : sText;
     }
 
-    /** Native entry point: show the modal input box. */
+    /** Native entry point: show the modal box.
+     *  mode 0 = message-only alert, 1 = yes/no confirm, 2 = text input. */
     public static void show(final String title, final String message,
-                            final String def, final int maxLen) {
+                            final String def, final int maxLen, final int mode) {
         sDone = false;
         sOk = false;
         sText = "";
@@ -55,35 +56,62 @@ public final class NativeInput {
         a.runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                final EditText et = new EditText(a);
-                et.setInputType(InputType.TYPE_CLASS_TEXT);
-                et.setText(def == null ? "" : def);
-                et.setSelection(et.getText().length());
-                if (maxLen > 0) {
-                    et.setFilters(new InputFilter[]{
-                            new InputFilter.LengthFilter(maxLen)});
-                }
-                new AlertDialog.Builder(a)
+                AlertDialog.Builder b = new AlertDialog.Builder(a)
                         .setTitle(title == null ? "" : title)
-                        .setMessage(message == null ? "" : message)
-                        .setView(et)
-                        .setPositiveButton("OK",
-                                new DialogInterface.OnClickListener() {
-                                    @Override
-                                    public void onClick(DialogInterface d, int w) {
-                                        sText = et.getText().toString();
-                                        sOk = true;
-                                        sDone = true;
-                                    }
-                                })
-                        .setNegativeButton("Cancel",
-                                new DialogInterface.OnClickListener() {
-                                    @Override
-                                    public void onClick(DialogInterface d, int w) {
-                                        sDone = true;
-                                    }
-                                })
-                        .setOnCancelListener(new DialogInterface.OnCancelListener() {
+                        .setMessage(message == null ? "" : message);
+                if (mode == 2) {
+                    final EditText et = new EditText(a);
+                    et.setInputType(InputType.TYPE_CLASS_TEXT);
+                    et.setText(def == null ? "" : def);
+                    et.setSelection(et.getText().length());
+                    if (maxLen > 0) {
+                        et.setFilters(new InputFilter[]{
+                                new InputFilter.LengthFilter(maxLen)});
+                    }
+                    b.setView(et)
+                            .setPositiveButton("OK",
+                                    new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(DialogInterface d, int w) {
+                                            sText = et.getText().toString();
+                                            sOk = true;
+                                            sDone = true;
+                                        }
+                                    })
+                            .setNegativeButton("Cancel",
+                                    new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(DialogInterface d, int w) {
+                                            sDone = true;
+                                        }
+                                    });
+                } else if (mode == 1) {
+                    b.setPositiveButton("OK",
+                                    new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(DialogInterface d, int w) {
+                                            sOk = true;
+                                            sDone = true;
+                                        }
+                                    })
+                            .setNegativeButton("Cancel",
+                                    new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(DialogInterface d, int w) {
+                                            sDone = true;
+                                        }
+                                    });
+                } else {
+                    b.setPositiveButton("OK",
+                            new DialogInterface.OnClickListener() {
+                                @Override
+                                public void onClick(DialogInterface d, int w) {
+                                    sOk = true;
+                                    sDone = true;
+                                }
+                            });
+                }
+                b.setOnCancelListener(new DialogInterface.OnCancelListener() {
                             @Override
                             public void onCancel(DialogInterface d) {
                                 sDone = true;

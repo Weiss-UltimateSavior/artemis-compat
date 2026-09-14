@@ -51,7 +51,7 @@ namespace {
 JavaVM *g_vm = nullptr;
 jclass g_input_class = nullptr;          // global ref, com.ies_net.artemis.debug.NativeInput
 jmethodID g_input_install = nullptr;     // install(Activity)
-jmethodID g_input_show = nullptr;        // show(String,String,String,int)
+jmethodID g_input_show = nullptr;        // show(String,String,String,int,int)
 jmethodID g_input_is_done = nullptr;     // boolean isDone()
 jmethodID g_input_result_ok = nullptr;   // boolean resultOk()
 jmethodID g_input_result_text = nullptr; // String resultText()
@@ -118,7 +118,7 @@ void CacheNativeInput(ANativeActivity *activity) {
     g_input_install = env->GetStaticMethodID(
         g_input_class, "install", "(Landroid/app/Activity;)V");
     g_input_show = env->GetStaticMethodID(
-        g_input_class, "show", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V");
+        g_input_class, "show", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V");
     g_input_is_done = env->GetStaticMethodID(g_input_class, "isDone", "()Z");
     g_input_result_ok = env->GetStaticMethodID(g_input_class, "resultOk", "()Z");
     g_input_result_text = env->GetStaticMethodID(
@@ -146,8 +146,9 @@ bool ShowNativeInput(artc::DialogRequest &req) {
     jstring jt = env->NewStringUTF(req.title.c_str());
     jstring jm = env->NewStringUTF(req.message.c_str());
     jstring jd = env->NewStringUTF("");
+    const jint mode = req.has_input ? 2 : (req.has_result ? 1 : 0);
     env->CallStaticVoidMethod(g_input_class, g_input_show, jt, jm, jd,
-                              static_cast<jint>(req.textfieldsize));
+                              static_cast<jint>(req.textfieldsize), mode);
     env->DeleteLocalRef(jt);
     env->DeleteLocalRef(jm);
     env->DeleteLocalRef(jd);

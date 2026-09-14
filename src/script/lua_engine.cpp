@@ -1714,23 +1714,27 @@ int LuaEngine::l_tag(lua_State *L) {
             return 0;
         }
         if (tagname == "dialog" && inst) {
-            // Native input dialog (framework tag_dialog): the host shows a
-            // modal text box and returns the entered string, which the script
-            // reads back through `textfield`. `varname` gets the accept flag.
+            // Native host dialog (framework tag_dialog): message-only alert,
+            // yes/no confirm (varname), or text input (textfield). The host
+            // fills text/accepted; we write the result variables back.
             DialogRequest req;
             req.title = m.count("title") ? m["title"] : std::string();
             req.message = m.count("message") ? m["message"] : std::string();
             req.textfield = m.count("textfield") ? m["textfield"] : std::string();
             req.textfieldsize = m.count("textfieldsize")
                                     ? std::atoi(m["textfieldsize"].c_str()) : 0;
-            if (inst->dialog_handler_) inst->dialog_handler_(req);
-            else Log(kLogWarn, "dialog: no host input handler; treating as cancelled");
+            req.has_input = !req.textfield.empty();
             const std::string varname = m.count("varname") ? m["varname"] : std::string();
+            req.has_result = !varname.empty();
+            if (inst->dialog_handler_) inst->dialog_handler_(req);
+            else Log(kLogWarn, "dialog: no host handler; treating as dismissed");
             if (!req.textfield.empty()) inst->vars_[req.textfield] = req.text;
             if (!varname.empty()) inst->vars_[varname] = req.accepted ? "1" : "0";
-            Log(kLogInfo, "dialog: textfield='" + req.textfield + "' accepted=" +
-                              (req.accepted ? "1" : "0") + " len=" +
-                              std::to_string(req.text.size()));
+            Log(kLogInfo, "dialog: kind=" +
+                              std::string(req.has_input ? "input"
+                                                        : (req.has_result ? "confirm" : "alert")) +
+                              " accepted=" + (req.accepted ? "1" : "0") +
+                              " len=" + std::to_string(req.text.size()));
             return 0;
         }
         if (tagname == "chgmsg" && inst) {

@@ -142,29 +142,40 @@ struct Engine {
             lua.reset();
             return false;
         }
-        // Native [dialog] input box (protagonist name entry etc.).
+        // Native [dialog] host box: message-only alert, yes/no confirm, or
+        // text input depending on the tag attributes set by the framework.
         lua->SetDialogHandler([](artc::DialogRequest &req) -> bool {
             g_dialog_open = YES;
             bool accepted = false;
             @autoreleasepool {
                 NSAlert *alert = [[NSAlert alloc] init];
                 alert.messageText = [NSString
-                    stringWithUTF8String:req.title.empty() ? "Input" : req.title.c_str()];
+                    stringWithUTF8String:req.title.empty() ? "Notice" : req.title.c_str()];
                 if (!req.message.empty())
                     alert.informativeText = [NSString stringWithUTF8String:req.message.c_str()];
-                [alert addButtonWithTitle:@"OK"];
-                [alert addButtonWithTitle:@"Cancel"];
-                NSTextField *field = [[NSTextField alloc]
-                    initWithFrame:NSMakeRect(0, 0, 280, 24)];
-                [alert setAccessoryView:field];
-                [alert.window setInitialFirstResponder:field];
-                const NSModalResponse r = [alert runModal];
-                if (r == NSAlertFirstButtonReturn) {
-                    accepted = true;
-                    std::string s = field.stringValue ? [field.stringValue UTF8String] : "";
-                    if (req.textfieldsize > 0 && s.size() > (size_t)req.textfieldsize)
-                        s.resize(req.textfieldsize);
-                    req.text = s;
+                if (req.has_input) {
+                    [alert addButtonWithTitle:@"OK"];
+                    [alert addButtonWithTitle:@"Cancel"];
+                    NSTextField *field = [[NSTextField alloc]
+                        initWithFrame:NSMakeRect(0, 0, 280, 24)];
+                    [alert setAccessoryView:field];
+                    [alert.window setInitialFirstResponder:field];
+                    const NSModalResponse r = [alert runModal];
+                    if (r == NSAlertFirstButtonReturn) {
+                        accepted = true;
+                        std::string s = field.stringValue ? [field.stringValue UTF8String] : "";
+                        if (req.textfieldsize > 0 && s.size() > (size_t)req.textfieldsize)
+                            s.resize(req.textfieldsize);
+                        req.text = s;
+                    }
+                } else if (req.has_result) {
+                    [alert addButtonWithTitle:@"OK"];
+                    [alert addButtonWithTitle:@"Cancel"];
+                    accepted = ([alert runModal] == NSAlertFirstButtonReturn);
+                } else {
+                    [alert addButtonWithTitle:@"OK"];
+                    [alert runModal];
+                    accepted = true;  // message-only: dismissed
                 }
             }
             req.accepted = accepted;
