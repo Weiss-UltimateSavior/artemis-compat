@@ -85,6 +85,10 @@ private:
     AsbScript script_;
     size_t pc_ = 0;
     bool loaded_ = false;
+    // True when pc_ was just set by a [return]/Return(): the instruction there
+    // has not executed yet, so a call issued before it runs must resume *at*
+    // it (not after) — ResetStack()+uitrans() relies on this.
+    bool pc_pending_ = false;
     bool halted_ = false;
     PackManager *packs_ = nullptr;
     std::string current_file_;   // cache: the main loop re-jumps every frame

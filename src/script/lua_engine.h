@@ -32,6 +32,17 @@ struct lua_State;
 
 namespace artc {
 
+// [dialog ... textfield=… textfieldsize=…] — a host-modal input box. The host
+// handler fills `text` (and `accepted`) after the user confirms/cancels.
+struct DialogRequest {
+    std::string title;
+    std::string message;
+    std::string textfield;   // variable that receives the entered text
+    int textfieldsize = 0;   // max characters (0 = host default)
+    std::string text;        // filled by the host
+    bool accepted = false;   // filled by the host
+};
+
 class Compositor;
 class Audio;
 class AudioChannels;
@@ -194,6 +205,11 @@ public:
     bool LoadSnapshot(const std::string& file);
 
     lua_State *state() const { return L_; }
+    // Host hook for the native [dialog] input box (name entry). When unset the
+    // request is logged and treated as cancelled.
+    void SetDialogHandler(std::function<bool(DialogRequest &)> cb) {
+        dialog_handler_ = std::move(cb);
+    }
     // E-mote proxies resolve their layer through the live registry so a
     // stale handle (after lydel or a same-id replace) fails soft instead
     // of dangling.
@@ -364,6 +380,7 @@ private:
     bool exit_requested_ = false;
     bool saving_ = false;
     std::string save_dir_;   // game directory for system.dat / saves
+    std::function<bool(DialogRequest &)> dialog_handler_;
     SnapshotImage save_image_;
     InputState input_;
     bool pending_click_ = false;

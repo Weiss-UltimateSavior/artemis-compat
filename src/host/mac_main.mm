@@ -42,6 +42,10 @@ namespace fs = std::filesystem;
 
 constexpr int kKeyTap = 1;
 
+// Set while a native [dialog] input box is up so the frame timer does not
+// re-enter the engine from inside the nested modal run loop.
+BOOL g_dialog_open = NO;
+
 std::string ToLower(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower((unsigned char)c));
     return s;
@@ -138,6 +142,35 @@ struct Engine {
             lua.reset();
             return false;
         }
+        // Native [dialog] input box (protagonist name entry etc.).
+        lua->SetDialogHandler([](artc::DialogRequest &req) -> bool {
+            g_dialog_open = YES;
+            bool accepted = false;
+            @autoreleasepool {
+                NSAlert *alert = [[NSAlert alloc] init];
+                alert.messageText = [NSString
+                    stringWithUTF8String:req.title.empty() ? "Input" : req.title.c_str()];
+                if (!req.message.empty())
+                    alert.informativeText = [NSString stringWithUTF8String:req.message.c_str()];
+                [alert addButtonWithTitle:@"OK"];
+                [alert addButtonWithTitle:@"Cancel"];
+                NSTextField *field = [[NSTextField alloc]
+                    initWithFrame:NSMakeRect(0, 0, 280, 24)];
+                [alert setAccessoryView:field];
+                [alert.window setInitialFirstResponder:field];
+                const NSModalResponse r = [alert runModal];
+                if (r == NSAlertFirstButtonReturn) {
+                    accepted = true;
+                    std::string s = field.stringValue ? [field.stringValue UTF8String] : "";
+                    if (req.textfieldsize > 0 && s.size() > (size_t)req.textfieldsize)
+                        s.resize(req.textfieldsize);
+                    req.text = s;
+                }
+            }
+            req.accepted = accepted;
+            g_dialog_open = NO;
+            return accepted;
+        });
         artc::IetRunner iet(&packs, lua.get());
         if (!iet.Run("system/first.iet")) {
             artc::Log(kLogError, "system/first.iet missing; boot aborted");
@@ -353,6 +386,7 @@ int KeyCodeForEvent(NSEvent *event) {
 
 - (void)tick:(NSTimer *)timer {
     if (!g_engine) return;
+    if (g_dialog_open) return;  // modal input box owns the run loop
     [[self openGLContext] makeCurrentContext];
     const NSRect bounds = [self bounds];
     const NSRect backing = [self convertRectToBacking:bounds];
@@ -372,6 +406,14 @@ int KeyCodeForEvent(NSEvent *event) {
 - (void)mouseUp:(NSEvent *)event { [self sendPointer:event down:NO move:NO]; }
 - (void)mouseDragged:(NSEvent *)event { [self sendPointer:event down:YES move:YES]; }
 - (void)mouseMoved:(NSEvent *)event { [self sendPointer:event down:NO move:YES]; }
+
+// Right button = the framework's "back/return" key (id 2, MWOFF/RCLICK),
+// which returns from the settings/manual/backlog/save screens.
+- (void)rightMouseDown:(NSEvent *)event { if (g_engine) g_engine->Key(2, true); }
+- (void)rightMouseUp:(NSEvent *)event { if (g_engine) g_engine->Key(2, false); }
+// Middle button = key 4.
+- (void)otherMouseDown:(NSEvent *)event { if (g_engine) g_engine->Key(4, true); }
+- (void)otherMouseUp:(NSEvent *)event { if (g_engine) g_engine->Key(4, false); }
 
 - (void)keyDown:(NSEvent *)event {
     const int key = KeyCodeForEvent(event);

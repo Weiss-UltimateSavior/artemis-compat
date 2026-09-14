@@ -1713,6 +1713,26 @@ int LuaEngine::l_tag(lua_State *L) {
             inst->compositor_->SetProps(m["id"], {{"draggable", "1"}});
             return 0;
         }
+        if (tagname == "dialog" && inst) {
+            // Native input dialog (framework tag_dialog): the host shows a
+            // modal text box and returns the entered string, which the script
+            // reads back through `textfield`. `varname` gets the accept flag.
+            DialogRequest req;
+            req.title = m.count("title") ? m["title"] : std::string();
+            req.message = m.count("message") ? m["message"] : std::string();
+            req.textfield = m.count("textfield") ? m["textfield"] : std::string();
+            req.textfieldsize = m.count("textfieldsize")
+                                    ? std::atoi(m["textfieldsize"].c_str()) : 0;
+            if (inst->dialog_handler_) inst->dialog_handler_(req);
+            else Log(kLogWarn, "dialog: no host input handler; treating as cancelled");
+            const std::string varname = m.count("varname") ? m["varname"] : std::string();
+            if (!req.textfield.empty()) inst->vars_[req.textfield] = req.text;
+            if (!varname.empty()) inst->vars_[varname] = req.accepted ? "1" : "0";
+            Log(kLogInfo, "dialog: textfield='" + req.textfield + "' accepted=" +
+                              (req.accepted ? "1" : "0") + " len=" +
+                              std::to_string(req.text.size()));
+            return 0;
+        }
         if (tagname == "chgmsg" && inst) {
             auto it = m.find("id");
             inst->msg_layer_ = it == m.end() ? std::string() : it->second;

@@ -103,6 +103,7 @@ bool AsbRunner::Load(const std::vector<uint8_t> &image, const std::string &label
     loaded_ = true;
     halted_ = false;
     pc_ = 0;
+    pc_pending_ = false;
     if (!label.empty() && !FindLabel(label, &pc_)) {
         Log(kLogWarn, "asb: label not found: " + label);
         pc_ = 0;
@@ -139,8 +140,11 @@ bool AsbRunner::Call(const std::string &file, const std::string &label) {
     // Lua-originated estag call whose runner sits at a stale halt must not
     // push a return into a dead region.
     const bool event_start = event_entry_ && event_revision_ == flow_revision_;
-    if (!event_start && loaded_ && pc_ + 1 < script_.lines.size())
-        callstack_.push_back({current_file_, pc_ + 1});
+    // A call issued before pc_ has executed (right after a [return]) must
+    // resume at pc_ itself; otherwise resume after the current line.
+    const size_t resume = pc_pending_ ? pc_ : pc_ + 1;
+    if (!event_start && loaded_ && resume < script_.lines.size())
+        callstack_.push_back({current_file_, resume});
     return Jump(file, label);
 }
 
@@ -165,6 +169,7 @@ bool AsbRunner::Return() {
     }
     if (top.pc >= script_.lines.size() && !top.event) return false;
     pc_ = top.pc;
+    pc_pending_ = true;
     ++flow_revision_;
     halted_ = top.halted;
     if (top.lua) top.lua->RestoreWait(top.wait);
@@ -221,6 +226,7 @@ void AsbRunner::JumpTo(const std::string &label) {
     // A jump re-enters execution (estag chains call the same script again
     // after an earlier [return] halted it — see AsbRunner::Jump's cache path).
     halted_ = false;
+    pc_pending_ = false;
     if (std::getenv("ARTC_JUMP_TRACE"))
         Log(kLogInfo, "asb-jumpto: " + label + " pc=" + std::to_string(pc_));
     size_t pc = 0;
@@ -237,6 +243,7 @@ void AsbRunner::GotoIndex(size_t index) {
     }
     ++flow_revision_;
     halted_ = false;
+    pc_pending_ = false;
     pc_ = index;
 }
 
@@ -277,6 +284,7 @@ bool EstimateTrue(LuaEngine &lua, const std::string &estimate) {
 
 bool AsbRunner::ExecuteLine(LuaEngine& lua) {
     if (!loaded_ || halted_ || pc_ >= script_.lines.size()) { halted_ = true; return false; }
+    pc_pending_ = false;
     const uint64_t before = flow_revision_;
     const AsbLine line = Current(); // callbacks can replace script_ in this call
     auto attr = [&](const char* name) { return Attr(line, name); };
