@@ -18,10 +18,12 @@
 #include <android/log.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <dirent.h>
+#include <jni.h>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -44,6 +46,136 @@
 using namespace artc;
 
 namespace {
+
+// ---- native [dialog] input box: JNI bridge to NativeInput.java ----
+JavaVM *g_vm = nullptr;
+jclass g_input_class = nullptr;          // global ref, com.ies_net.artemis.debug.NativeInput
+jmethodID g_input_install = nullptr;     // install(Activity)
+jmethodID g_input_show = nullptr;        // show(String,String,String,int)
+jmethodID g_input_is_done = nullptr;     // boolean isDone()
+jmethodID g_input_result_ok = nullptr;   // boolean resultOk()
+jmethodID g_input_result_text = nullptr; // String resultText()
+
+// Resolve NativeInput through the Activity's class loader first (robust when
+// the .so is dlopen'd from an external plugin dir by a loader stub).
+jclass ResolveNativeInputClass(JNIEnv *env, ANativeActivity *activity) {
+    if (activity && activity->clazz) {
+        jclass actCls = env->GetObjectClass(activity->clazz);
+        if (actCls) {
+            jmethodID getCl = env->GetMethodID(
+                actCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+            jclass clCls = nullptr;
+            jmethodID loadClass = nullptr;
+            if (getCl) {
+                jobject cl = env->CallObjectMethod(activity->clazz, getCl);
+                if (!env->ExceptionCheck() && cl) {
+                    clCls = env->GetObjectClass(cl);
+                    if (clCls)
+                        loadClass = env->GetMethodID(
+                            clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+                    if (loadClass) {
+                        jstring nm = env->NewStringUTF("com.ies_net.artemis.debug.NativeInput");
+                        jclass cls = static_cast<jclass>(
+                            env->CallObjectMethod(cl, loadClass, nm));
+                        env->DeleteLocalRef(nm);
+                        if (!env->ExceptionCheck() && cls) {
+                            env->DeleteLocalRef(clCls);
+                            env->DeleteLocalRef(cl);
+                            env->DeleteLocalRef(actCls);
+                            return cls;
+                        }
+                        if (env->ExceptionCheck()) env->ExceptionClear();
+                    }
+                    if (clCls) env->DeleteLocalRef(clCls);
+                    env->DeleteLocalRef(cl);
+                }
+                if (env->ExceptionCheck()) env->ExceptionClear();
+            }
+            env->DeleteLocalRef(actCls);
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+    jclass cls = env->FindClass("com/ies_net/artemis/debug/NativeInput");
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    return cls;
+}
+
+// Cache the bridge class/methods on the UI thread (ANativeActivity_onCreate),
+// where class resolution finds the app's classes.
+void CacheNativeInput(ANativeActivity *activity) {
+    if (!activity || !activity->vm) return;
+    g_vm = activity->vm;
+    JNIEnv *env = nullptr;
+    if (g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK)
+        return;
+    jclass local = ResolveNativeInputClass(env, activity);
+    if (!local) {
+        LOGI("NativeInput.java not present; [dialog] will be treated as cancelled");
+        return;
+    }
+    g_input_class = static_cast<jclass>(env->NewGlobalRef(local));
+    env->DeleteLocalRef(local);
+    g_input_install = env->GetStaticMethodID(
+        g_input_class, "install", "(Landroid/app/Activity;)V");
+    g_input_show = env->GetStaticMethodID(
+        g_input_class, "show", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V");
+    g_input_is_done = env->GetStaticMethodID(g_input_class, "isDone", "()Z");
+    g_input_result_ok = env->GetStaticMethodID(g_input_class, "resultOk", "()Z");
+    g_input_result_text = env->GetStaticMethodID(
+        g_input_class, "resultText", "()Ljava/lang/String;");
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (g_input_install && activity->clazz)
+        env->CallStaticVoidMethod(g_input_class, g_input_install, activity->clazz);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+// Blocking host handler (runs on the engine thread): post the dialog to the UI
+// thread, then poll until it is dismissed. The engine is paused meanwhile.
+bool ShowNativeInput(artc::DialogRequest &req) {
+    if (!g_vm || !g_input_class || !g_input_show) {
+        req.text.clear();
+        req.accepted = false;
+        return false;
+    }
+    JNIEnv *env = nullptr;
+    bool attached = false;
+    if (g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return false;
+        attached = true;
+    }
+    jstring jt = env->NewStringUTF(req.title.c_str());
+    jstring jm = env->NewStringUTF(req.message.c_str());
+    jstring jd = env->NewStringUTF("");
+    env->CallStaticVoidMethod(g_input_class, g_input_show, jt, jm, jd,
+                              static_cast<jint>(req.textfieldsize));
+    env->DeleteLocalRef(jt);
+    env->DeleteLocalRef(jm);
+    env->DeleteLocalRef(jd);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    // Poll for the user (touch input goes to the dialog window, not the engine).
+    for (int i = 0; i < 20000; ++i) {
+        if (env->CallStaticBooleanMethod(g_input_class, g_input_is_done) == JNI_TRUE)
+            break;
+        if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+    const jboolean ok = env->CallStaticBooleanMethod(g_input_class, g_input_result_ok);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jstring res = static_cast<jstring>(
+        env->CallStaticObjectMethod(g_input_class, g_input_result_text));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (res) {
+        const char *utf = env->GetStringUTFChars(res, nullptr);
+        req.text = utf ? utf : "";
+        if (utf) env->ReleaseStringUTFChars(res, utf);
+        env->DeleteLocalRef(res);
+    } else {
+        req.text.clear();
+    }
+    req.accepted = (ok == JNI_TRUE);
+    if (attached) g_vm->DetachCurrentThread();
+    return req.accepted;
+}
 
 struct EngineState {
     std::atomic<bool> running{false};
@@ -215,6 +347,8 @@ bool BootScene(PackManager &packs, const artc::Ini &ini,
         g_state.lua.reset();
         return false;
     }
+    // Native [dialog] input box (name entry): Java AlertDialog + EditText.
+    g_state.lua->SetDialogHandler(ShowNativeInput);
     g_state.stage_w = stage_w;
     g_state.stage_h = stage_h;
     LOGI("lua ready; running boot script via iet interpreter");
@@ -532,6 +666,8 @@ ANativeActivity_onCreate(ANativeActivity *activity, void *savedState,
     activity->callbacks->onInputQueueCreated = OnInputQueueCreated;
     activity->callbacks->onInputQueueDestroyed = OnInputQueueDestroyed;
     activity->instance = nullptr;
+
+    CacheNativeInput(activity);
 
     g_state.running = true;
     LOGI("compat engine: ANativeActivity_onCreate (clean-room build)");

@@ -113,6 +113,10 @@ com.ies_net.artemis.debug.DebugBridge.nativeInstall(
 
 > `nativeInstall` 是本项目自有的引导入口（官方 jar 之外的附加类，随本项目提供）。
 
+原生 `[dialog]` 输入框（主人公取名等）由 `src/jni/java/com/ies_net/artemis/debug/NativeInput.java`
+提供：把该文件一并放入 app 模块（与 `DebugBridge` 同级包路径）即可。缺少它时 `[dialog]`
+会被当作取消，游戏改用默认名继续（不会卡死）。
+
 ## 非目标 / 已知缺口
 
 - E-mote 完整 SDK 等价：网格/stencil 变形、复杂继承/深度/混合、物理与公开复杂模型仍不支持（加密头 PSB v2–v4、HOLD/插值、嵌套 motion 与 id 链变换继承已支持）
