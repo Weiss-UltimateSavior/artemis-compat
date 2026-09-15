@@ -17,8 +17,7 @@
 #include "render/shader_compat.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "render/stb_image.h"
-#define STB_TRUETYPE_IMPLEMENTATION
-#include "render/stb_truetype.h"
+#include "render/stb_truetype.h"   // implementations live in glyph_atlas.cpp
 #endif
 
 #include <algorithm>
@@ -933,6 +932,37 @@ uint32_t Compositor::CreateTexture(const uint8_t *pixels, int w, int h) {
     return tex;
 }
 
+// Glyph cache GL side. A page uploads once on first use and re-uploads only
+// when its generation advanced (new cells were placed since); repeat text
+// (typewriter re-sets, page flips, repeated UI strings) costs no upload.
+uint32_t Compositor::GlyphPageTexture(size_t page) {
+    const auto &pages = glyph_atlas_.Pages();
+    if (page >= pages.size()) return 0;
+    const auto &p = pages[page];
+    uint32_t &tex = glyph_page_textures_[page];
+    uint64_t &uploaded = glyph_page_uploaded_[page];
+    if (tex && uploaded == p.generation) return tex;
+    if (!tex) {
+        tex = CreateTexture(p.pixels.data(), GlyphAtlas::Page::kWidth,
+                            GlyphAtlas::Page::kHeight);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, GlyphAtlas::Page::kWidth,
+                        GlyphAtlas::Page::kHeight, GL_RGBA, GL_UNSIGNED_BYTE,
+                        p.pixels.data());
+    }
+    uploaded = p.generation;
+    return tex;
+}
+
+void Compositor::DropGlyphGl() {
+    for (auto &kv : glyph_page_textures_)
+        if (kv.second) glDeleteTextures(1, &kv.second);
+    glyph_page_textures_.clear();
+    glyph_page_uploaded_.clear();
+    glyph_atlas_.Invalidate();
+}
+
 bool Compositor::LoadImage(const std::string &id, const std::string &file) {
     ++revision_;
     if (!gl_ready_ || !packs_) return false;
@@ -1023,6 +1053,8 @@ bool Compositor::LoadFont(const std::string &file) {
     font_path_ = file;
     font_info_ = info;
     font_ready_ = true;
+    // Glyph indices belong to the previous face — cached cells are stale.
+    DropGlyphGl();
     Log(kLogInfo, "font loaded: " + file + " (" + std::to_string(font_data_.size()) + " B)");
     return true;
 }
@@ -1247,69 +1279,53 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     // Each glyph occupies its own padded atlas cell. Overlapping outlines
     // and kerning must not reveal neighbouring letters during a character
     // tween. The complete line layout stays fixed throughout the animation.
-    struct Cell { int x, y, w, h; std::vector<uint8_t> pixels; };
-    std::vector<Cell> cells;
+    // Cells come from the persistent glyph cache: repeat text skips stbtt
+    // rasterization, CPU compositing and the GPU upload entirely.
     std::vector<TextGlyph> positioned;
-    const int atlas_w = 1024;
-    int atlas_x=1, atlas_y=1, atlas_row=0;
-    for (size_t k=0;k<glyphs.size();++k) {
-        if (lx[k]<0) continue;
-        int gw=0,gh=0,xoff=0,yoff=0;
-        const float gs=k<base_count ? scale : ruby_scale;
-        uint8_t* bmp=stbtt_GetGlyphBitmap(info,gs,gs,glyphs[k],&gw,&gh,&xoff,&yoff);
-        const int cw=gw+2*outline, ch=gh+2*outline;
-        if (atlas_x+cw+1>atlas_w) { atlas_x=1; atlas_y+=atlas_row+2; atlas_row=0; }
-        if (cw+2>atlas_w || atlas_y+ch+1>4096) { stbtt_FreeBitmap(bmp,nullptr); return false; }
-        std::vector<uint8_t> cov(static_cast<size_t>(cw)*ch,0), pixels(cov.size()*4,0);
-        if (bmp) for(int y=0;y<gh;++y) for(int x=0;x<gw;++x)
-            cov[static_cast<size_t>(y+outline)*cw+x+outline]=bmp[y*gw+x];
-        stbtt_FreeBitmap(bmp,nullptr);
-        for(int y=0;y<ch;++y) for(int x=0;x<cw;++x) {
-            const size_t off=static_cast<size_t>(y)*cw+x;
-            const float fill=cov[off]/255.f;
-            uint8_t border=0;
-            if(outline) for(int oy=-outline;oy<=outline;++oy) for(int ox=-outline;ox<=outline;++ox) {
-                const int xx=x+ox, yy=y+oy;
-                if(xx>=0 && xx<cw && yy>=0 && yy<ch && ox*ox+oy*oy<=outline*outline)
-                    border=std::max(border,cov[static_cast<size_t>(yy)*cw+xx]);
-            }
-            const float edge=border/255.f*(1-fill), alpha=fill+edge;
-            if(alpha<=0) continue;
-            for(int c=0;c<3;++c) {
-                const int shift=(2-c)*8;
-                pixels[off*4+c]=static_cast<uint8_t>((((color>>shift)&255)*fill+
-                    ((outline_color>>shift)&255)*edge)/alpha);
-            }
-            pixels[off*4+3]=static_cast<uint8_t>(std::lround(alpha*255));
+    std::vector<const GlyphAtlas::Entry *> cells;
+    for (int attempt = 0;; ++attempt) {
+        bool evicted = false;
+        positioned.clear();
+        cells.clear();
+        for (size_t k = 0; k < glyphs.size(); ++k) {
+            if (lx[k] < 0) continue;
+            const float gs = k < base_count ? scale : ruby_scale;
+            const auto *cell = glyph_atlas_.Lookup(
+                info, {glyphs[k], gs, outline, color, outline_color});
+            if (!cell) return false; // degenerate cell (legacy failure)
+            if (glyph_atlas_.WasReset()) { evicted = true; break; }
+            const int free_width=tex_w-2*outline-line_w[ly[k]];
+            const int shift=align=="center" ? free_width/2 : (align=="right" ? free_width : 0);
+            TextGlyph g;
+            g.order=k;
+            for(const auto& r:ruby_groups) if(k>=r.glyph_first && k<r.glyph_last) g.order=r.first;
+            const float glyph_baseline=k<base_count ? baseline : outline+number("spacetop",0)+ascent*ruby_scale;
+            g.x=lx[k]+cell->xoff+shift;
+            g.y=glyph_baseline+ly[k]*line_h+cell->yoff-outline;
+            g.w=cell->w; g.h=cell->h;
+            g.u0=cell->u0; g.v0=cell->v0; g.u1=cell->u1; g.v1=cell->v1;
+            positioned.push_back(g);
+            cells.push_back(cell);
         }
-        const int free_width=tex_w-2*outline-line_w[ly[k]];
-        const int shift=align=="center" ? free_width/2 : (align=="right" ? free_width : 0);
-        TextGlyph g;
-        g.order=k;
-        for(const auto& r:ruby_groups) if(k>=r.glyph_first && k<r.glyph_last) g.order=r.first;
-        const float glyph_baseline=k<base_count ? baseline : outline+number("spacetop",0)+ascent*ruby_scale;
-        g.x=lx[k]+xoff+shift; g.y=glyph_baseline+ly[k]*line_h+yoff-outline;
-        g.w=cw; g.h=ch;
-        g.u0=float(atlas_x)/atlas_w; g.u1=float(atlas_x+cw)/atlas_w;
-        g.v0=atlas_y; g.v1=atlas_y+ch; // normalize after the final atlas height is known
-        positioned.push_back(g);
-        cells.push_back({atlas_x,atlas_y,cw,ch,std::move(pixels)});
-        atlas_x+=cw+2; atlas_row=std::max(atlas_row,ch);
+        if (!evicted) break;
+        // Watermark eviction: cells placed earlier in this pass and the other
+        // layers' glyphs reference evicted pages — drop them and retry on the
+        // fresh cache. A single text exceeding the page budget alone fails.
+        if (attempt >= 1) return false;
+        for (auto &l : layers_) { l.glyphs.clear(); l.text.clear(); }
+        DropGlyphGl();
     }
-    const int atlas_h=std::max(1,atlas_y+atlas_row+1);
-    std::vector<uint8_t> rgba(static_cast<size_t>(atlas_w)*atlas_h*4,0);
-    for(const auto& cell:cells) for(int y=0;y<cell.h;++y)
-        std::copy_n(cell.pixels.data()+static_cast<size_t>(y)*cell.w*4,cell.w*4,
-                    rgba.data()+(static_cast<size_t>(cell.y+y)*atlas_w+cell.x)*4);
-    for(auto& g:positioned) { g.v0/=atlas_h; g.v1/=atlas_h; }
-    const uint32_t tex=CreateTexture(rgba.data(),atlas_w,atlas_h);
+    // Ensure every referenced page has an up-to-date GPU texture.
+    for (size_t i = 0; i < positioned.size(); ++i)
+        positioned[i].tex = GlyphPageTexture(cells[i]->page);
 
-    // upsert layer; message-layer default position = bottom-left
+    // upsert layer; message-layer default position = bottom-left. Text
+    // layers reference the shared atlas pages, not a per-SetText texture.
     for (auto &l : layers_) {
         if (l.id == id) {
             if (l.texture) glDeleteTextures(1, &l.texture);
-            l.texture = tex;
-            l.tex_w = atlas_w; l.tex_h = atlas_h;
+            l.texture = 0;
+            l.tex_w = tex_w; l.tex_h = tex_h;
             SetGlyphTimes(l, positioned, text);
             // The placeholder layer may carry a degenerate (0-sized) rect
             // from its ghost creation — the new raster defines the display
@@ -1319,14 +1335,15 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
             l.content_x = number("left", 0);
             l.content_y = number("top", 0);
             Log(kLogInfo, "SetText: replaced " + id + " " +
-                              std::to_string(tex_w) + "x" + std::to_string(tex_h));
+                              std::to_string(tex_w) + "x" + std::to_string(tex_h) +
+                              " (glyphs " + std::to_string(positioned.size()) + ")");
             return true;
         }
     }
     Layer l;
     l.id = id;
-    l.texture = tex;
-    l.tex_w = atlas_w; l.tex_h = atlas_h;
+    l.texture = 0;
+    l.tex_w = tex_w; l.tex_h = tex_h;
     SetGlyphTimes(l, positioned, text);
     l.w = (float)tex_w; l.h = (float)tex_h;
     l.content_x = number("left", 0);
@@ -1439,6 +1456,7 @@ void Compositor::ReleaseGl() {
     shaders_.ReleaseGl();
     for(auto& mask:masks_)if(mask.second.texture)glDeleteTextures(1,&mask.second.texture);
     masks_.clear();
+    DropGlyphGl();
     ++revision_;
     for (auto &l : layers_) {
         if (l.texture) glDeleteTextures(1, &l.texture);
@@ -1535,7 +1553,8 @@ void Compositor::Draw() {
     auto draw_leaf=[&](const Layer* l,float inherited,bool top_down) {
         const auto transform=EffectiveTransform(*l);
         const float ea=transform.alpha/inherited;
-        if (!transform.visible || !l->texture || ea<=0) return;
+        if (!transform.visible || ea<=0) return;
+        if (!l->texture && l->glyphs.empty()) return; // placeholder: nothing to draw
         glUseProgram(prog_.program);
         glUniform1f(prog_.u_top_down,top_down?1:0);
         glUniform2f(prog_.u_screen,float(stage_w_),float(stage_h_));
@@ -1545,8 +1564,9 @@ void Compositor::Draw() {
         glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
         glBindTexture(GL_TEXTURE_2D, l->texture);
         if (!l->glyphs.empty()) {
-            std::vector<float> vertices;
-            vertices.reserve(l->glyphs.size()*30);
+            // Glyph cells reference shared atlas pages (persistent cache);
+            // group the quads per page texture and draw one batch each.
+            std::map<uint32_t,std::vector<float>> runs;
             for (const auto& g:l->glyphs) {
                 float gx=g.x, gy=g.y, alpha=1;
                 for (const auto& tw:l->text_in) {
@@ -1560,20 +1580,24 @@ void Compositor::Draw() {
                 if (alpha<=0 || g.w<=0 || g.h<=0) continue;
                 const auto p0=transform.Point(gx,gy), p1=transform.Point(gx+g.w,gy);
                 const auto p2=transform.Point(gx,gy+g.h), p3=transform.Point(gx+g.w,gy+g.h);
+                auto& vertices=runs[g.tex];
+                vertices.reserve(vertices.size()+30);
                 vertices.insert(vertices.end(),{p0.first,p0.second,g.u0,g.v0,alpha,
                     p1.first,p1.second,g.u1,g.v0,alpha, p2.first,p2.second,g.u0,g.v1,alpha,
                     p2.first,p2.second,g.u0,g.v1,alpha, p1.first,p1.second,g.u1,g.v0,alpha,
                     p3.first,p3.second,g.u1,g.v1,alpha});
             }
-            if(!vertices.empty()) {
+            for (const auto& kv:runs) {
+                if (kv.second.empty()) continue;
+                glBindTexture(GL_TEXTURE_2D, kv.first);
                 glUniform1f(prog_.u_alpha,ea);
-                glVertexAttribPointer(prog_.a_pos,2,GL_FLOAT,GL_FALSE,20,vertices.data());
+                glVertexAttribPointer(prog_.a_pos,2,GL_FLOAT,GL_FALSE,20,kv.second.data());
                 glEnableVertexAttribArray(prog_.a_pos);
-                glVertexAttribPointer(prog_.a_uv,2,GL_FLOAT,GL_FALSE,20,vertices.data()+2);
+                glVertexAttribPointer(prog_.a_uv,2,GL_FLOAT,GL_FALSE,20,kv.second.data()+2);
                 glEnableVertexAttribArray(prog_.a_uv);
-                glVertexAttribPointer(prog_.a_opacity,1,GL_FLOAT,GL_FALSE,20,vertices.data()+4);
+                glVertexAttribPointer(prog_.a_opacity,1,GL_FLOAT,GL_FALSE,20,kv.second.data()+4);
                 glEnableVertexAttribArray(prog_.a_opacity);
-                glDrawArrays(GL_TRIANGLES,0,vertices.size()/5);
+                glDrawArrays(GL_TRIANGLES,0,kv.second.size()/5);
                 glDisableVertexAttribArray(prog_.a_opacity);
                 glVertexAttrib1f(prog_.a_opacity,1);
             }
@@ -1667,7 +1691,7 @@ void Compositor::Draw() {
             float dx, dy, da; bool dv;
             EffectiveRect(*l, &dx, &dy, &da, &dv);
             if (!dv) continue;
-            if (!l->texture) { ++ghost; continue; }
+            if (!l->texture && l->glyphs.empty()) { ++ghost; continue; }
             ++drawn;
             if (drawn <= 16)
                 sample += " " + l->id + "(" + std::to_string((int)dx) + "," +

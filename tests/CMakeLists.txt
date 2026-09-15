@@ -69,6 +69,14 @@ add_executable(runtime_state_regressions runtime_state_regressions.cpp)
 target_link_libraries(runtime_state_regressions PRIVATE artemis_core)
 add_test(NAME runtime_state_regressions COMMAND runtime_state_regressions)
 
+add_executable(glyph_atlas_regressions glyph_atlas_regressions.cpp)
+target_include_directories(glyph_atlas_regressions PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/render)
+target_compile_definitions(glyph_atlas_regressions PRIVATE
+    ARTC_TEST_DATA="${ARTC_TEST_DATA_DIR}")
+target_link_libraries(glyph_atlas_regressions PRIVATE artemis_core)
+add_test(NAME glyph_atlas_regressions COMMAND glyph_atlas_regressions)
+
 # Video decoding only when the core was built with FFmpeg and the tool is
 # available to synthesize a fixture.
 get_target_property(ARTC_DEFINES artemis_deps INTERFACE_COMPILE_DEFINITIONS)

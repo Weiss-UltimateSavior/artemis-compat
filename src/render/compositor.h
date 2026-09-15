@@ -9,6 +9,7 @@
 // Stage coordinates: WIDTH×HEIGHT from system.ini (e.g. 1280×720), mapped to
 // the render surface by an orthographic transform in the shader.
 #pragma once
+#include "render/glyph_atlas.h"
 #include "render/layer_shader.h"
 #include "util/snapshot_image.h"
 #include "util/text.h"
@@ -26,6 +27,7 @@ class PackManager;
 struct TextGlyph {
     float x = 0, y = 0, w = 0, h = 0;
     float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+    uint32_t tex = 0;   // glyph-atlas page texture (persistent cache)
     double start_ms = 0;
     size_t order = 0;
 };
@@ -261,6 +263,10 @@ private:
     bool IsProhibitHead(uint32_t cp) const;
     bool IsProhibitFoot(uint32_t cp) const;
     bool IsWordpart(uint32_t cp) const;
+    // Glyph cache GL side: page textures keyed by atlas page index, with the
+    // uploaded generation per page (a page re-uploads only when it changed).
+    uint32_t GlyphPageTexture(size_t page);
+    void DropGlyphGl();
 
     int stage_w_ = 1280, stage_h_ = 720;
     LayerShaders shaders_;
@@ -317,6 +323,11 @@ private:
     void *font_info_ = nullptr;
     bool font_ready_ = false;
 
+    // persistent glyph cache (see glyph_atlas.h): rasterized cells survive
+    // SetText calls; the compositor owns page textures + upload generations.
+    GlyphAtlas glyph_atlas_;
+    std::map<size_t, uint32_t> glyph_page_textures_;
+    std::map<size_t, uint64_t> glyph_page_uploaded_;
 };
 
 } // namespace artc
