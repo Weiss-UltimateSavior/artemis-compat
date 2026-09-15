@@ -27,6 +27,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace artc {
@@ -39,6 +40,12 @@ struct Pf8Entry {
 
 class Pf8Reader {
 public:
+    ~Pf8Reader();
+    // Holds an open file descriptor for the pack; copies would double-close.
+    Pf8Reader() = default;
+    Pf8Reader(const Pf8Reader &) = delete;
+    Pf8Reader &operator=(const Pf8Reader &) = delete;
+
     // `key` empty (default) → derive automatically via SHA1 over the index
     // region. An explicit key overrides derivation.
     bool Open(const std::string &path, const std::vector<uint8_t> &key = {});
@@ -51,6 +58,8 @@ public:
     bool Encrypted() const { return encrypted_; }
 
     // Case-insensitive-ish lookup: exact, then normalized-separator match.
+    // O(1) through the lookup index built at Open (first record wins, so
+    // duplicate normalized names keep the earliest entry).
     bool Find(const std::string &name, Pf8Entry &out) const;
 
     // Read+decrypt one entry into `out`. Returns false on IO/lookup failure.
@@ -64,12 +73,22 @@ public:
                    std::vector<uint8_t> &out) const;
 
 private:
+    // Positional read off the retained pack handle (pread on POSIX — safe
+    // for concurrent reads; the legacy fopen path on Windows).
+    bool ReadAt(uint64_t offset, void *buf, size_t len) const;
     void DecryptRange(uint8_t *data, size_t len, uint64_t offset) const;
+    void Close();
 
     std::string path_;
     std::vector<uint8_t> key_;
     bool encrypted_ = true;
     std::vector<Pf8Entry> entries_;
+    // normalized entry name → index of the FIRST matching record (the
+    // original engine's first-record-wins lookup), built once at Open.
+    std::unordered_map<std::string, size_t> index_;
+#if !defined(_WIN32)
+    int fd_ = -1;
+#endif
 };
 
 } // namespace artc
