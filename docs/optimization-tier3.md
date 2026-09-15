@@ -64,11 +64,17 @@ src/render/
 
 ### 验收标准
 
+> **落地状态（本次）**：仅完成低风险切片 —— `cmake --install` 规则（含 core 静态库、
+> Android `.so`、CLI/mac 宿主、公开头）。**物理拆分暂缓**：GL 与共享函数并非按行
+> 连续分布（`LoadShader` 在共享段且需 stub/GL 双实现，`CreateTexture`/`SetText`/
+> `DrawTransitionOverlay` 等在两段各有一份），必须逐函数分类后再移动，否则默认构建
+> 会重复定义或链接失败。拆分按 §"实施步骤 1" 独立立项进行。
+
 - [ ] 桩与 GL 实现不同文件，`grep -c '#ifdef' src/render/compositor.cpp` 大幅下降。
 - [ ] 默认构建（macOS/Linux host）编译的是 GL 路径，`compositor_regressions`
       免 ANGLE 全绿。
 - [ ] Android 产物 `libartemis.so` 符号面无变化（`nm` diff 断言——行为等价证据）。
-- [ ] `cmake --install` 可用。
+- [x] `cmake --install` 可用（artemis_core / artemis(.so) / artc / artemis-mac + 头）。
 
 ### 风险与缓解
 
@@ -135,10 +141,16 @@ README「宿主回归测试」一节），不含任何商业游戏资源。
 
 ### 验收标准
 
-- [ ] `ctest` 文件数 17 → 21+；AsbRunner/save_storage/native_save/iet 各有专属套件。
-- [ ] 故障注入用例（kill 中途 / 满盘）证明存档原子性。
-- [ ] asb 与 iet 两条脚本路径的一致性用例绿。
-- [ ] `host_drive` 生命周期冒烟进默认 ctest。
+> **落地状态（本次）**：新增 `asb_runner_regressions` / `save_regressions` /
+> `iet_regressions` 三套件，ctest 16 → 19。覆盖 AsbRunner 状态机（嵌套/跨文件/
+> pc_pending_/事件帧/DiscardFlow）、存档原子性与故障注入（崩溃留痕/RLIMIT 半途失败/
+> 只读目录）、iet 两条路径一致性。**`native_save` BOWS 与 `host_drive` 生命周期
+> 冒烟未做**（前者需合成 BOWS 固件，后者需合成最小游戏包），留作独立立项。
+
+- [x] `ctest` 16 → 19；AsbRunner/save_storage/iet 各有专属套件。
+- [x] 故障注入用例（写中途失败 / 满盘 via RLIMIT_FSIZE / 权限拒绝）证明存档原子性。
+- [x] asb 与 iet 两条脚本路径的一致性用例绿。
+- [ ] `native_save` BOWS roundtrip 套件；`host_drive` 生命周期冒烟进默认 ctest。
 
 ### 风险与缓解
 
@@ -208,7 +220,12 @@ judder 比例）与电流，作为前后对比基线。
 
 ### 验收标准
 
-- [ ] 帧率与屏幕刷新率一致（gfxinfo 确认），16ms sleep 代码删除。
+> **落地状态（本次）**：实现 `eglSwapInterval(1)`（每次 EGL 上下文重建都重设）+
+> 帧循环改为「绘制帧由 swap 背压、空闲帧/未启用 vsync 时才 sleep」；`ARTC_SWAP_INTERVAL=0`
+> 为设备级回退。帧率/judder/功耗量化需 [真机]。
+
+- [ ] [真机] 帧率与屏幕刷新率一致（gfxinfo 确认）。
+- [x] 固定 16ms sleep 仅保留给空闲/回退路径（动画帧不再 sleep）。
 - [ ] judder（帧间隔标准差）较基线显著下降。
 - [ ] 输入→响应延迟分布不劣化（tap 到 tag 派发时延对比）。
 - [ ] 静止场景功耗下降（二期休眠合流后进一步下降）。

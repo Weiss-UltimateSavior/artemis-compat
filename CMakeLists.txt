@@ -102,6 +102,22 @@ if(ARTC_BUILD_JNI)
     target_link_libraries(artemis PRIVATE artemis_core log android EGL GLESv2 ${opensl-lib})
 endif()
 
+# ---- install rules (T3-1): downstream integration should not hand-copy so's
+include(GNUInstallDirs)
+install(TARGETS artemis_core ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+if(TARGET artemis)
+    install(TARGETS artemis LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
+if(TARGET artc)
+    install(TARGETS artc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+if(TARGET artemis-mac)
+    install(TARGETS artemis-mac RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/artemis-compat
+        FILES_MATCHING PATTERN "*.h")
+
 # ---- host regression suite (synthetic fixtures; see tests/) ----
 if(ARTC_BUILD_TESTS)
     enable_testing()

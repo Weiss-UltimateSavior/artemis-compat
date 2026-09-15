@@ -558,15 +558,22 @@ void EngineThreadMain(ANativeActivity *activity) {
                 ctx->compositor().PendingAnimationMs(now) > 0 ||
                 ctx->compositor().TransitionActive() ||
                 ctx->compositor().PendingTextMs(now) > 0;
+            bool drew = false;
             if (drawn_rev != ctx->compositor().Revision() || animating) {
                 renderer.Clear();   // clears the full surface (letterbox bars too)
                 ctx->compositor().Draw();  // layers (script [flip] draws only)
                 renderer.Present(); // single present per frame — no flicker
                 drawn_rev = ctx->compositor().Revision();
+                drew = true;
             }
             lua.EndFrame();     // clear per-frame edges
+            // Frame pacing (T3-3): a swap already blocked until vsync, so
+            // animating frames need no sleep. Idle frames and the device
+            // fallback (SwapPaced()==false) still need one — no swap means no
+            // backpressure, and spinning would burn CPU.
+            if (!drew || !renderer.SwapPaced())
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
 
     // exit: release GL state and window refs

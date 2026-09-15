@@ -27,6 +27,10 @@ public:
     void Clear();
     // Swap the backbuffer to the display.
     void Present();
+    // True when eglSwapBuffers paces the frame loop to the display refresh
+    // (eglSwapInterval(1)); false when the host must pace itself (fallback
+    // build/device: ARTC_SWAP_INTERVAL=0).
+    bool SwapPaced() const { return swap_paced_; }
     // Present one frame (clear + swap).
     void DrawFrame();
     // Release the context/surface.
@@ -49,6 +53,7 @@ private:
     void *window_ = nullptr;
 #endif
     bool ready_ = false;
+    bool swap_paced_ = false;   // eglSwapInterval(1) applied successfully
     int width_ = 0, height_ = 0;
     float vp_x_ = 0, vp_y_ = 0, vp_w_ = 1, vp_h_ = 1;   // viewport in surface px
     int stage_w_ = 1280, stage_h_ = 720;

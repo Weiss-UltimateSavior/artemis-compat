@@ -1,6 +1,9 @@
 #include "render/renderer.h"
 #include "log/logger.h"
 
+#include <cstdlib>
+#include <cstring>
+
 #if defined(__ANDROID__)
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
@@ -38,6 +41,23 @@ bool Renderer::Init(void *native_window) {
     if (!eglMakeCurrent(display_, surface_, surface_, context_)) {
         last_error_ = "eglMakeCurrent failed";
         return false;
+    }
+
+    // Frame pacing (T3-3): swap blocks until the next vsync, replacing the
+    // old fixed 16 ms sleep (which drifts against the display clock and
+    // wastes wakeups). ARTC_SWAP_INTERVAL=0 is the documented device-level
+    // fallback for drivers where the interval is unreliable; the host then
+    // paces itself with a sleep. Re-applied here on every context rebuild
+    // (window loss / re-init), which is where the interval resets.
+    const char *swap_env = std::getenv("ARTC_SWAP_INTERVAL");
+    if (!(swap_env && std::strcmp(swap_env, "0") == 0)) {
+        const EGLBoolean ok = eglSwapInterval(display_, 1);
+        swap_paced_ = (ok == EGL_TRUE);
+        Log(kLogInfo, std::string("renderer: eglSwapInterval(1) ") +
+                          (swap_paced_ ? "applied" : "rejected; host-paced"));
+    } else {
+        swap_paced_ = false;
+        Log(kLogInfo, "renderer: swap interval disabled (ARTC_SWAP_INTERVAL=0)");
     }
 
     window_ = window;

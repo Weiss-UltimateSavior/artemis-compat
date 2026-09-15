@@ -25,6 +25,18 @@ target_compile_definitions(audio_stream_regressions PRIVATE
 target_link_libraries(audio_stream_regressions PRIVATE artemis_core)
 add_test(NAME audio_stream_regressions COMMAND audio_stream_regressions)
 
+add_executable(asb_runner_regressions asb_runner_regressions.cpp)
+target_link_libraries(asb_runner_regressions PRIVATE artemis_core)
+add_test(NAME asb_runner_regressions COMMAND asb_runner_regressions)
+
+add_executable(save_regressions save_regressions.cpp)
+target_link_libraries(save_regressions PRIVATE artemis_core)
+add_test(NAME save_regressions COMMAND save_regressions)
+
+add_executable(iet_regressions iet_regressions.cpp)
+target_link_libraries(iet_regressions PRIVATE artemis_core)
+add_test(NAME iet_regressions COMMAND iet_regressions)
+
 add_executable(pf8_regressions pf8_regressions.cpp)
 target_link_libraries(pf8_regressions PRIVATE artemis_core)
 add_test(NAME pf8_regressions COMMAND pf8_regressions)

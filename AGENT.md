@@ -118,8 +118,13 @@ jni / host（宿主壳）
 
 ## 8. 测试规范
 
-- 夹具**全部合成**（tests/data：rectangle.ttf 矩形字形字体 + 生成音调），
-  不含商业资源——新测试沿用此传统。
+- 夹具**全部合成**（tests/data：rectangle.ttf 矩形字形字体 + 生成音调；脚本类
+  夹具用内置 pf8 写入器现造容器），不含商业资源——新测试沿用此传统。
+- 关键路径专属套件：`asb_runner_regressions`（runner 状态机：嵌套/跨文件 call、
+  `[return]` 后的 pc_pending_ 恢复点、事件帧、DiscardFlow）、`save_regressions`
+  （原子写不变量 + 故障注入：崩溃留痕/RLIMIT_FSIZE/只读目录）、`iet_regressions`
+  （.iet 行模型 + IetRunner 与 AsbRunner 两条路径一致性）。改这些子系统必须
+  先扩对应套件。
 - 命名 `*_regressions.cpp`，一个子系统一个可执行 + 一个 ctest 用例；
   目标注册进 `tests/CMakeLists.txt`。
 - **行为保持类重构**（tag 拆分、缓存引入）必须扩展对应回归：
@@ -168,8 +173,11 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
 - **第二梯队（已完成）**：T2-1 EngineContext 装配收敛 / T2-2 Draw 零分配 +
   重绘门控 / T2-3 音频解码移出回调线程。规范见 §12–§14，方案与验收见
   docs/optimization-tier2.md。
-- **第三梯队（待做）**：渲染条件编译收敛、关键路径测试补齐、vsync。
-  见 docs/optimization-tier3.md。
+- **第三梯队（部分落地）**：T3-2 关键路径测试补齐（19/19，新增 asb_runner/
+  save/iet 三套件）、T3-3 vsync（eglSwapInterval + 帧节奏，真机量化待做）、
+  T3-1 仅完成 `cmake --install`；**compositor 物理拆分暂缓**——GL 与共享函数
+  逐函数交错（`LoadShader` 共享、`CreateTexture`/`SetText` 双实现），需先分类
+  再移动。见 docs/optimization-tier3.md 各节「落地状态」。
 - 已知计划偏差（有意为之）：
   - T1-3 验收从「src/script 全目录零 render include」放宽为「头文件零」
     （.cpp 实现层单向使用渲染是合法分层，接口抽象留给 T2-1）；
@@ -250,3 +258,24 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
   若未来新增不 bump 的帧源，必须补 bump 而不是加宽门控。
 - 门控是行为开关：上线按「完全静止」灰度，五个重点场景（对话推进、长 tween、
   trans 过渡、视频、E-mote）在 mac 宿主 + 真机各冒烟一次。
+
+## 15. 测试与帧节奏规范（T3 落地模式）
+
+- **关键子系统先有网再动结构**：AsbRunner / save_storage / iet / (待补 native_save)
+  的改动必须落到 `tests/*_regressions.cpp`；合成脚本夹具用内置 pf8 写入器现造
+  容器（`BuildPack` 模式：file_count + records 的 SHA1 派生密钥），不得引入游戏资产。
+- **执行轨迹即断言**：runner 类测试以「唯一 tag 的 `tag[trace]` 首见顺序」为轨迹
+  （未注册 tag 的 no-op 语义是 M0 发现机制，保留），辅以 `asb: load/return to`
+  日志断言；不要为测试新增引擎日志。
+- **存档安全网**：`save_storage` 的原子性（O_EXCL temp + fsync + rename）通过
+  故障注入证明——崩溃留痕不提交、RLIMIT_FSIZE 半途写失败、只读目录明确失败，
+  且三种情况旧档必须完好。
+- **帧节奏**：Android 用 `eglSwapInterval(1)` 让 swap 提供背压；只有「未绘制帧」
+  或 `Renderer::SwapPaced()==false`（`ARTC_SWAP_INTERVAL=0` 设备回退）才 sleep。
+  上下文重建（窗口丢失/重 init）处必须重设 interval——`Renderer::Init` 是唯一
+  设置点，不要在别处复制这段逻辑。
+- **门控与 vsync 的耦合**：跳过绘制的帧没有 swap 背压，必须保留一个空闲等待
+  （当前 16ms sleep），否则会忙等烧 CPU；二期若换 Choreographer/条件变量，
+  替换的是这个空闲等待，不是 swap 路径。
+- **安装**：`cmake --install` 必须保持可用（core/so/CLI/mac + `src/**/*.h`），
+  下游（壳工程/打包脚本）不再手拷 `build-android/libartemis.so`。
