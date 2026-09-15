@@ -16,11 +16,13 @@
 #import <Cocoa/Cocoa.h>
 
 #include "config/ini.h"
+#include "core/engine_context.h"
 #include "log/logger.h"
 #include "pack/pack_manager.h"
 #include "render/compositor.h"
 #include "render/gles2_headers.h"
 #include "script/asb_parser.h"
+#include "script/dialog_request.h"
 #include "script/iet_interpreter.h"
 #include "script/lua_engine.h"
 
@@ -46,34 +48,6 @@ constexpr int kKeyTap = 1;
 // re-enter the engine from inside the nested modal run loop.
 BOOL g_dialog_open = NO;
 
-std::string ToLower(std::string s) {
-    for (char &c : s) c = static_cast<char>(std::tolower((unsigned char)c));
-    return s;
-}
-
-bool EndsWith(const std::string &s, const std::string &suffix) {
-    return s.size() >= suffix.size() &&
-           s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-// A directory holding root.pfs (and its patch chain), or a direct .pfs path.
-std::string ResolvePack(const std::string &path) {
-    if (!fs::is_directory(path)) return path;
-    std::vector<std::string> packs;
-    for (const auto &e : fs::directory_iterator(path)) {
-        if (e.is_regular_file() && EndsWith(ToLower(e.path().filename().string()), ".pfs"))
-            packs.push_back(e.path().string());
-    }
-    if (packs.empty()) return {};
-    std::sort(packs.begin(), packs.end(), [](const std::string &a, const std::string &b) {
-        const bool ra = EndsWith(ToLower(a), "/root.pfs");
-        const bool rb = EndsWith(ToLower(b), "/root.pfs");
-        if (ra != rb) return ra;
-        return a < b;
-    });
-    return packs.front();
-}
-
 struct Engine {
     struct RawInput {
         bool is_key = false;
@@ -83,15 +57,10 @@ struct Engine {
         float x = 0, y = 0; // view point coordinates (top-left origin)
     };
 
-    artc::PackManager packs;
-    artc::Ini ini;
-    artc::Compositor compositor;
-    artc::AsbRunner runner;
-    std::unique_ptr<artc::LuaEngine> lua;
+    std::unique_ptr<artc::EngineContext> ctx;
     int stage_w = 1280, stage_h = 720;
-    std::string os_name = "windows";
-    std::string save_dir;
     bool booted = false;
+    uint64_t drawn_rev = ~0ull;   // redraw gate: last presented layer revision
     bool exit_requested = false;
 
     // view metrics: points for input mapping, backing pixels for glViewport
@@ -102,49 +71,24 @@ struct Engine {
     std::deque<RawInput> events;
 
     bool Open(const std::string &game_path, const std::string &os) {
-        os_name = os;
-        const std::string pack = ResolvePack(game_path);
-        if (pack.empty()) {
-            artc::Log(kLogError, "no .pfs pack at " + game_path);
+        ctx = std::make_unique<artc::EngineContext>();
+        if (!ctx->Open(game_path, os)) {
+            ctx.reset();
             return false;
         }
-        save_dir = fs::path(pack).parent_path().string();
-        if (!packs.OpenChain(pack, {})) {
-            artc::Log(kLogError, "cannot open pack chain: " + pack);
-            return false;
-        }
-        std::vector<uint8_t> ini_bytes;
-        if (packs.Read("system.ini", ini_bytes))
-            ini.Parse(std::string(ini_bytes.begin(), ini_bytes.end()));
-        int w = ini.GetInt("ANDROID", "WIDTH", 0);
-        int h = ini.GetInt("ANDROID", "HEIGHT", 0);
-        if (w <= 0 || h <= 0) {
-            w = ini.GetInt("WINDOWS", "WIDTH", 1280);
-            h = ini.GetInt("WINDOWS", "HEIGHT", 720);
-        }
-        stage_w = std::max(1, w);
-        stage_h = std::max(1, h);
-        artc::Log(kLogInfo, "mac host: pack=" + pack + " stage=" +
-                                std::to_string(stage_w) + "x" + std::to_string(stage_h));
+        stage_w = ctx->stageW();
+        stage_h = ctx->stageH();
+        artc::Log(kLogInfo, "mac host: stage=" + std::to_string(stage_w) + "x" +
+                                std::to_string(stage_h));
         return true;
     }
 
     bool Boot() {
-        compositor.ReleaseGl();
-        compositor.SetPackManager(&packs);
-        compositor.Init(stage_w, stage_h);
-        compositor.SetPresent(nullptr);
+        if (!ctx || !ctx->Start()) return false;
 
-        lua = std::make_unique<artc::LuaEngine>();
-        lua->SetSaveDir(save_dir);
-        if (!lua->Init(&packs, ini, os_name, stage_w, stage_h, &compositor)) {
-            artc::Log(kLogError, "lua init failed");
-            lua.reset();
-            return false;
-        }
         // Native [dialog] host box: message-only alert, yes/no confirm, or
         // text input depending on the tag attributes set by the framework.
-        lua->SetDialogHandler([](artc::DialogRequest &req) -> bool {
+        ctx->lua().SetDialogHandler([](artc::DialogRequest &req) -> bool {
             g_dialog_open = YES;
             bool accepted = false;
             @autoreleasepool {
@@ -182,28 +126,8 @@ struct Engine {
             g_dialog_open = NO;
             return accepted;
         });
-        artc::IetRunner iet(&packs, lua.get());
-        if (!iet.Run("system/first.iet")) {
-            artc::Log(kLogError, "system/first.iet missing; boot aborted");
-            lua.reset();
-            return false;
-        }
-        runner = artc::AsbRunner();
-        runner.SetPackSource(&packs);
-        lua->SetScriptRunner(&runner);
-        artc::AsbRunner *r = &runner;
-        lua->SetJumpHandler([r](const std::string &file, const std::string &label) {
-            r->Jump(file, label);
-        });
-        lua->SetCallHandler([r](const std::string &file, const std::string &label) {
-            r->Call(file, label);
-        });
-        lua->SetStopHandler([r](const std::string &tag) {
-            if (tag == "stop") { r->Halt(); return; }
-            if (!r->Return()) r->Halt();
-        });
+        if (!ctx->BootFramework()) return false;
         booted = true;
-        artc::Log(kLogInfo, "mac host: boot sequence finished");
         return true;
     }
 
@@ -245,7 +169,8 @@ struct Engine {
             std::lock_guard<std::mutex> lk(mutex);
             batch.swap(events);
         }
-        if (!lua) return;
+        if (!ctx || !ctx->Started()) return;
+        artc::LuaEngine *lua = &ctx->lua();
         int touch = 0;
         bool tapped = false;
         float tap_x = 0, tap_y = 0;
@@ -280,10 +205,13 @@ struct Engine {
     }
 
     void DrainQueued() {
-        while (lua && !lua->IsWaiting() && lua->HasQueuedTag()) {
+        if (!ctx || !ctx->Started()) return;
+        artc::LuaEngine &lua = ctx->lua();
+        artc::AsbRunner &runner = ctx->runner();
+        while (!lua.IsWaiting() && lua.HasQueuedTag()) {
             std::string name;
             std::vector<std::pair<std::string, std::string>> attrs;
-            if (!lua->PopQueuedTag(&name, &attrs)) break;
+            if (!lua.PopQueuedTag(&name, &attrs)) break;
             if (name == "jump" || name == "call") {
                 std::string file, label;
                 for (const auto &kv : attrs) {
@@ -293,20 +221,22 @@ struct Engine {
                 if (name == "call") runner.Call(file, label);
                 else runner.Jump(file, label);
             } else {
-                lua->DispatchTag(name, attrs, false);
+                lua.DispatchTag(name, attrs, false);
             }
         }
     }
 
     void Step() {
-        if (!lua) return;
-        if (runner.Loaded() && !runner.Halted() && !lua->IsWaiting()) {
+        if (!ctx || !ctx->Started()) return;
+        artc::LuaEngine &lua = ctx->lua();
+        artc::AsbRunner &runner = ctx->runner();
+        if (runner.Loaded() && !runner.Halted() && !lua.IsWaiting()) {
             for (int i = 0; i < 4 && runner.Loaded() && !runner.Halted(); ++i) {
-                runner.ExecuteLine(*lua);
+                runner.ExecuteLine(lua);
                 DrainQueued();
-                if (lua->IsWaiting()) break;
+                if (lua.IsWaiting()) break;
             }
-        } else if (!lua->IsWaiting() && lua->HasQueuedTag()) {
+        } else if (!lua.IsWaiting() && lua.HasQueuedTag()) {
             DrainQueued();
         }
     }
@@ -323,7 +253,7 @@ struct Engine {
         const int vw = (int)(stage_w * s), vh = (int)(stage_h * s);
         const int vx = ((int)fb_w - vw) / 2, vy = ((int)fb_h - vh) / 2;
         glViewport(vx, vy, vw, vh);
-        compositor.Draw();
+        ctx->compositor().Draw();
     }
 
     void Tick(float backing_w, float backing_h, float points_w, float points_h) {
@@ -332,12 +262,13 @@ struct Engine {
         pt_w = points_w;
         pt_h = points_h;
 
-        if (lua && lua->ConsumeResetRequest()) {
+        if (ctx && ctx->Started() && ctx->lua().ConsumeResetRequest()) {
             artc::Log(kLogInfo, "mac host: reset requested; re-running boot chain");
-            lua.reset();
+            ctx->ResetSession();
             booted = false;
+            drawn_rev = ~0ull;
         }
-        if (lua && lua->ConsumeExitRequest()) {
+        if (ctx && ctx->Started() && ctx->lua().ConsumeExitRequest()) {
             artc::Log(kLogInfo, "mac host: exit requested");
             exit_requested = true;
             return;
@@ -347,14 +278,25 @@ struct Engine {
             return;
         }
         DrainInput();
-        if (lua) {
-            lua->RunEnterFrame();
+        if (ctx && ctx->Started()) {
+            ctx->lua().RunEnterFrame();
             DrainQueued();
         }
         Step();
-        if (lua) compositor.Update(lua->NowMs());
-        Present();
-        if (lua) lua->EndFrame();
+        if (ctx && ctx->Started()) {
+            ctx->compositor().Update(ctx->lua().NowMs());
+            // Redraw gate (T2-2): a fully static scene skips clear+draw.
+            const double now = ctx->lua().NowMs();
+            const bool animating =
+                ctx->compositor().PendingAnimationMs(now) > 0 ||
+                ctx->compositor().TransitionActive() ||
+                ctx->compositor().PendingTextMs(now) > 0;
+            if (drawn_rev != ctx->compositor().Revision() || animating) {
+                Present();
+                drawn_rev = ctx->compositor().Revision();
+            }
+            ctx->lua().EndFrame();
+        }
     }
 };
 

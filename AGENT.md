@@ -16,10 +16,11 @@
 
 ```
 jni / host（宿主壳）
- └── script（LuaEngine + tag 分发）    [实现层 .cpp 可单向使用 render]
-      ├── render（Compositor/GL/文本）
-      ├── audio / pack / config
-      └── 共享底座：util / input / save
+ └── core（EngineContext：唯一装配点与所有者）   [仅宿主可 include]
+      └── script（LuaEngine + tag 分发）    [实现层 .cpp 可单向使用 render]
+           ├── render（Compositor/GL/文本）
+           ├── audio / pack / config
+           └── 共享底座：util / input / save
 ```
 
 **依赖规则（grep 可断言，写进提交前自查）：**
@@ -27,14 +28,16 @@ jni / host（宿主壳）
 1. `src/render/` 不得 `#include "script/…"`（模块级循环，已清零，不得回归）。
 2. `src/script/*.h` 不得 `#include "render/…"`（头文件层不反向依赖渲染；
    `lua_engine.cpp` 等实现文件可单向 include render——那是合法分层方向）。
-3. 跨模块共享的类型一律下沉到最低公共层：
+3. `core/` 只被 `host/`、`jni/` 引用；任何引擎模块（script/render/audio/pack）
+   不得 `#include "core/…"`。
+4. 跨模块共享的类型一律下沉到最低公共层：
    - `util/text.h`：`TextRuby` + UTF8/Base64/URL/SplitEscaped 工具；
    - `util/snapshot_image.h`：纯像素 + PNG 编码（无 GL）；
    - `util/save_storage.h`：原子写 + 变量银行编解码；
    - `input/`：`InputState`、`AutoReadTimer`（jni 喂、render 消费）；
    - `save/`：BOWS/BOWG 反序列化、存档元数据修复。
-4. 新增模块目录必须同步 `CMakeLists.txt` 的 GLOB 列表（`src/save/`、`src/input/`
-   即此例），否则静默漏编。
+5. 新增模块目录必须同步 `CMakeLists.txt` 的 GLOB 列表（`src/save/`、`src/input/`、
+   `src/core/` 即此例），否则静默漏编。
 
 ## 3. e:tag 派发规范（T1-1 落地模式）
 
@@ -137,11 +140,15 @@ cmake --build build-mac -j8 --target artemis-mac     # GL 路径编译
 cmake --build build-android -j8                      # libartemis.so
 grep -rn '#include "script/' src/render/             # 必须为空
 grep -rn '#include "render/' src/script/*.h          # 必须为空
+rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/engine_context.cpp
+./build-host/artc drive <游戏目录>/root.pfs --frames 400  # 帧循环冒烟（含 click-wait）
 ```
 
 - 涉及剧情推进/文本/音频/图层的改动：真机（或 mac 宿主 + 实测游戏目录）
   跑「标题→对话→点击推进→CG→BGM/语音」冒烟。
 - 涉及 JNI/生命周期的改动：补验窗口旋转、GL 丢失恢复、退后台/回前台。
+- 涉及渲染/门控的改动：mac 宿主冒烟并按 §14 的五个场景核对有无漏重绘。
+- 涉及装配/音频线程的改动：核对 §12/§13 的自查项（单一装配、回调零解码）。
 
 ## 10. 既有高质量设计（重构红线，逐项核对）
 
@@ -158,12 +165,88 @@ grep -rn '#include "render/' src/script/*.h          # 必须为空
 
 - **第一梯队（已完成）**：T1-3 模块解耦 / T1-1 tag 分发表化 /
   T1-4 pf8 索引化 / T1-2 glyph cache。方案与验收见 docs/optimization-tier1.md。
-- **第二梯队（待做）**：EngineContext 装配收敛（硬前置=T1-3，已满足）、
-  Draw() 零分配 + 重绘门控、音频解码线程化。见 docs/optimization-tier2.md。
+- **第二梯队（已完成）**：T2-1 EngineContext 装配收敛 / T2-2 Draw 零分配 +
+  重绘门控 / T2-3 音频解码移出回调线程。规范见 §12–§14，方案与验收见
+  docs/optimization-tier2.md。
 - **第三梯队（待做）**：渲染条件编译收敛、关键路径测试补齐、vsync。
   见 docs/optimization-tier3.md。
 - 已知计划偏差（有意为之）：
   - T1-3 验收从「src/script 全目录零 render include」放宽为「头文件零」
     （.cpp 实现层单向使用渲染是合法分层，接口抽象留给 T2-1）；
   - T1-1 的「每 tag 一条合成用例」并入 T3-2 统一补齐；
-  - glyph cache 一期颜色计入 key（解耦二期看命中率）。
+  - glyph cache 一期颜色计入 key（解耦二期看命中率）；
+  - T2-3 一期保留压缩数据整段常驻，分块流式读并入 Tier 3；
+  - T2-1 未把 VideoPlayer/EmotePlayer 迁到 Compositor：它们由 LuaEngine 持有，
+    而 LuaEngine 归 EngineContext，单一所有权已成立；GL 丢失时整上下文重建，
+    `ReleaseGl` 完整性不受影响。
+
+---
+
+## 12. 引擎装配规范（T2-1 落地模式）
+
+- **`core/EngineContext` 是唯一装配点与唯一所有者**：`PackManager` / `Ini` /
+  `Audio` / `AudioChannels` / `Compositor` / `LuaEngine` / `AsbRunner` 只允许在
+  `src/core/engine_context.cpp` 创建。提交前自查：
+  `rg 'make_unique<PackManager>|make_unique<LuaEngine>' src` 只应命中该文件。
+- 宿主（jni/host/cli）一律持有 `std::unique_ptr<EngineContext>`，通过访问器
+  （`packs()/ini()/audio()/sounds()/compositor()/lua()/runner()`）取用；**不得**
+  再出现引擎裸全局（历史上的 `g_packs/g_lua/g_vm` 已清零）。
+- 三段式生命周期：
+  1. `Open(data_dir, os_id, key)`（无 GL）：解析包链（目录或 .pfs 直路径，
+     root.pfs 优先）、解析 system.ini、建 Audio/AudioChannels、定 stage 尺寸
+     （ANDROID 节优先，WINDOWS 兜底）。幂等，进程内只开一次。
+  2. `Start(with_compositor=true)`（GL 上下文当前）：建 Compositor 并 `Init`，
+     建 LuaEngine 并 `Init`。GL 丢失/[reset] 后再次调用即可重建会话（内部先
+     `ReleaseGl`）。DebugBridge 这类无 GL 路径用 `Start(false)`。
+  3. `BootFramework(drain_boot_queue=false)`：建 AsbRunner、跑
+     `system/first.iet`、接 jump/call/stop。`drain_boot_queue=true` 是 CLI
+     专用（boot 跳转立即执行，处理器此时尚未安装——保持历史顺序）。
+- 会话级重启（GL 丢失 / `[reset]` tag）统一走 `ResetSession()`，不要手动
+  `lua.reset()`；`Shutdown()` 才释放 compositor/audio/packs。
+- 跨宿主查询（JNI 音频暂停钩子等）用 `EngineContext::Current()/SetCurrent()`
+  注册表；它是引用登记，不承担所有权，`Shutdown()` 会自动摘除。
+- **LuaEngine 不再拥有 Audio/AudioChannels**：`Init` 收非拥有指针，析构只清
+  `videos_/emotes_`；`[alldelete]` 用 `Audio::StopAll()` + `AudioChannels::Reset()`
+  而不是 `delete/new`。音频指针为空时音频 tag 自然 no-op（门控已存在）。
+- 新增宿主必须复用 EngineContext；新增引擎子系统时把所有权挂进 EngineContext，
+  不要新增裸全局或让 script 模块当工厂。
+
+## 13. 音频解码规范（T2-3 落地模式）
+
+- **OpenSL 回调线程禁止解码**：回调函数体只允许「ring 拷贝 + 静音填充 +
+  `Enqueue`」；任何 `PcmStream::ReadStereo` 调用都属于 feed 线程。
+- `audio/pcm_ring.h` 是唯一缓冲：SPSC、容量向上取 2 的幂、空出一槽区分满/空。
+  **单生产者**（feed 线程）——需要预填时只在 voice 发布（进 `voices`）之前做，
+  且不得注册回调（这就是 `PlayStream` 里 prime 的顺序含义）。
+- Voice 用 `shared_ptr` 持有：feed 线程的快照与 voices 表各持一份引用，
+  `Stop` 只需从表里 `erase`；`~Voice` 的 OpenSL `Destroy` 负责等待回调退出。
+- 流尾语义：ring 空且 `source->Ended()` → 停止入队（让队列计数归零，
+  `IsPlaying` 变 false）；未结束但 ring 空 → 填静音并累加 underrun 计数
+  （feed 线程每 5s 汇总进 OutputLog，热路径不拼字符串）。
+- 所有 `Enqueue`/`Queue` 返回值必须检查（历史缺陷：第二次 `Queue()` 被忽略）。
+- 增删声道/接续（`_a`→`_b`）、`sfade/sxfade/sepan`、`[wait se=]`、
+  `setonsoundfinish` 的语义不改：只换数据供给方式，混音仍在消费侧。
+- `pcm_ring` 属 GL-free/平台无关单元，新行为（水位/回绕/SPSC 顺序）扩展
+  `audio_stream_regressions`，不要依赖真机才能跑。
+
+## 14. 渲染热路径与重绘门控（T2-2 落地模式）
+
+- **Draw 路径零每帧堆分配**：`draw_sorted_` / `draw_textures_` /
+  `draw_glyph_runs_` / `draw_mesh_vertices_` 是 compositor 成员 scratch；
+  `std::vector::clear()` 保容量，禁止在 Draw 里构造临时容器/字符串。
+- 纹理查表（effect 绑定）用 `std::vector<std::pair<id,tex>>` + 线性扫描，
+  只在 `revision_` 变化时重建（`draw_textures_rev_` 记忆）——稳态零分配。
+  `LayerShaders::End` 的 textures 参数类型与之同步；改签名必须同时改桩实现。
+- 诊断输出（`draw[]`）保持 300 帧节流；非诊断路径不得拼字符串。
+- **`revision_` 是重绘门控的唯一依据**，所有改变输出的入口必须 bump：
+  `LoadImage / SetProps / SetText / SetLayerMesh / SetPixels / DeleteLayer /
+  RenameLayer / ReleaseGl / AddTween / BeginTransition / Update(有变化时)`。
+  新增 mutation 入口时先核对这一点。
+- 宿主帧循环门控（保守条件，全静止才跳过）：
+  `rev != drawn_rev || PendingAnimationMs(now)>0 || TransitionActive() ||
+  PendingTextMs(now)>0` 才 `Clear+Draw+Present`；`Update(now)` 与 `EndFrame()`
+  必须每帧执行。窗口重建 / GL 丢失 / `[reset]` 后必须 `drawn_rev = ~0ull`。
+- 视频帧不需要单独信号：`VideoPlayer` 每帧走 `SetPixels → SetProps`，天然 bump。
+  若未来新增不 bump 的帧源，必须补 bump 而不是加宽门控。
+- 门控是行为开关：上线按「完全静止」灰度，五个重点场景（对话推进、长 tween、
+  trans 过渡、视频、E-mote）在 mac 宿主 + 真机各冒烟一次。

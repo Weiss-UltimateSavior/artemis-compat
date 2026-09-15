@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 namespace artc {
 struct LayerEffect {
@@ -35,7 +36,7 @@ public:
     void ReleaseGl();
     uint32_t Begin(size_t depth,int width,int height,uint32_t parent,bool parent_top_down);
     bool End(size_t depth,const LayerEffect& effect,uint32_t parent,bool parent_top_down,
-             float opacity,const std::map<std::string,uint32_t>& textures,const LayerCoverage& coverage={});
+             float opacity,const std::vector<std::pair<std::string,uint32_t>>& textures,const LayerCoverage& coverage={});
 private:
     struct Program { uint32_t gl=0;std::string source; };
     struct Surface { uint32_t texture=0,fbo=0; };

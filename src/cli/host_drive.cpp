@@ -16,6 +16,7 @@
 // ClickAt, all on the requested frame.
 
 #include "config/ini.h"
+#include "core/engine_context.h"
 #include "log/logger.h"
 #include "pack/pack_manager.h"
 #include "render/compositor.h"
@@ -72,20 +73,17 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
         taps.push_back(tap);
     }
 
-    PackManager packs;
-    if (!packs.OpenChain(pack, {})) {
+    // Single assembly point: EngineContext owns packs/ini/audio/compositor/
+    // lua/runner (the CLI host runs the compositor's no-GL stub path).
+    auto ctx = std::make_unique<EngineContext>();
+    if (!ctx->Open(pack, osName, {})) {
         Log(kLogError, "OpenChain failed: " + pack);
         return 1;
     }
-
-    Ini ini;
-    std::vector<uint8_t> ini_bytes;
-    if (packs.Read("system.ini", ini_bytes))
-        ini.Parse(std::string(ini_bytes.begin(), ini_bytes.end()));
     // Stage resolution from the level default (kept in ANDROID on all titles);
     // the osName above only selects framework behavior, not the surface size.
-    const int stage_w = ini.GetInt("ANDROID", "WIDTH", 1280);
-    const int stage_h = ini.GetInt("ANDROID", "HEIGHT", 720);
+    const int stage_w = ctx->stageW();
+    const int stage_h = ctx->stageH();
 
     Log(kLogInfo, "drive: pack=" + pack + " os=" + osName + " stage=" +
                       std::to_string(stage_w) + "x" + std::to_string(stage_h) +
@@ -94,66 +92,18 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
 
     // Save location = the game directory (next to the pack), like the engine
     // writes system.dat beside root.pfs.
-    std::string save_dir = pack;
-    const size_t slash = save_dir.find_last_of('/');
-    if (slash != std::string::npos) save_dir = save_dir.substr(0, slash);
-    Log(kLogInfo, "drive: save dir=" + save_dir);
+    Log(kLogInfo, "drive: save dir=" + ctx->saveDir());
 
-    Compositor compositor;
-    compositor.Init(stage_w, stage_h);
-
-    // Boot state lives on the heap so a [reset] tag can tear it down and
-    // re-run the boot chain (same as native_activity's window-loss path).
-    std::unique_ptr<LuaEngine> lua;
-    auto runner = std::make_unique<AsbRunner>();
+    // Boot state lives in the context so a [reset] tag can tear the session
+    // down and re-run the boot chain (same as native_activity's GL-loss path).
     auto boot = [&]() {
-        compositor.ReleaseGl();   // clear the previous frame's layers
-        lua = std::make_unique<LuaEngine>();
-        lua->SetSaveDir(save_dir);
-        if (!lua->Init(&packs, ini, osName, stage_w, stage_h, &compositor)) {
+        if (!ctx->Start()) {
             Log(kLogError, "lua init failed");
             return false;
         }
-        IetRunner iet(&packs, lua.get());
-        if (!iet.Run("system/first.iet")) {
-            Log(kLogError, "first.iet missing; boot aborted");
-            return false;
-        }
-        if (iet.Stopped()) Log(kLogInfo, "drive: boot script hit [stop]");
-        runner = std::make_unique<AsbRunner>();
-        runner->SetPackSource(&packs);
-        // first.iet ends by enqueueing the estag03 chain (language select →
-        // reset). Drain the boot *jumps* (game_start entry) right away; the
-        // estag03 "call" is user-triggered and must stay queued so the
-        // language click drives reset at the right time.
-        while (lua->HasQueuedTag()) {
-            std::string name;
-            std::vector<std::pair<std::string, std::string>> attrs;
-            if (!lua->PopQueuedTag(&name, &attrs)) break;
-            if (name == "jump") {
-                std::string file, label;
-                for (const auto &kv : attrs) {
-                    if (kv.first == "file") file = kv.second;
-                    else if (kv.first == "label") label = kv.second;
-                }
-                Log(kLogInfo, "boot queued [" + name + "] file=" + file +
-                                  " label=" + label);
-                runner->Jump(file, label);
-            } else {
-                lua->DispatchTag(name, attrs, false);
-            }
-        }
-        lua->SetScriptRunner(runner.get());
-        lua->SetJumpHandler([&runner](const std::string &file,
-                                      const std::string &label) {
-            runner->Jump(file, label);
-        });
-        lua->SetCallHandler([&runner](const std::string &file,
-                                      const std::string &label) {
-            runner->Call(file, label);
-        });
+        if (!ctx->BootFramework(/*drain_boot_queue=*/true)) return false;
         if (std::getenv("ARTC_CSV_TRACE"))
-            lua->DoString(
+            ctx->lua().DoString(
                 "local z=csv and csv.sysse and csv.sysse.sysvo or {}; "
                 "print('PVZ|charlist='..tostring(z.charlist)); "
                 "for nm,w in pairs(z) do "
@@ -163,24 +113,19 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
                 "   print('PVZ|'..tostring(nm)..'['..tostring(n)..']='..type(x)..'#'..tostring(type(x)=='table' and #x or -1)..'|flag='..tostring(on)) "
                 "  end end end",
                 "csvprobe");
-        lua->SetStopHandler([&runner](const std::string &tag) {
-            // [stop] halts the script until an explicit jump/call re-enters
-            // it; [return] pops the call frame. Popping on `stop` — the old
-            // upstream heuristic — let the main loop run past a pending
-            // choice.
-            if (tag == "stop") {
-                runner->Halt();
-                Log(kLogInfo, "asb: stop via lua tag (halt)");
-                return;
-            }
-            if (!runner->Return()) {
-                runner->Halt();
-                Log(kLogInfo, "asb: " + tag + " via lua tag");
-            }
-        });
         return true;
     };
     if (!boot()) return 1;
+
+    // Session pointers are re-fetched after every boot (a [reset] recreates
+    // them); the compositor itself survives resets.
+    LuaEngine *lua = &ctx->lua();
+    AsbRunner *runner = &ctx->runner();
+    auto refresh_session = [&]() {
+        lua = ctx->Started() ? &ctx->lua() : nullptr;
+        runner = ctx->Started() ? &ctx->runner() : nullptr;
+    };
+    Compositor &compositor = ctx->compositor();
 
     // ---- frame loop (mirrors native_activity.cpp EngineThreadMain) ----
     bool waited = false;
@@ -213,6 +158,7 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
         if (lua && lua->ConsumeResetRequest()) {
             Log(kLogInfo, "drive: reset requested; re-running boot chain");
             boot();
+            refresh_session();
             waited = false;
         }
         if (lua && lua->ConsumeExitRequest()) {

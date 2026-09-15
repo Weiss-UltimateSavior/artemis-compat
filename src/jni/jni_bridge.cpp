@@ -13,6 +13,7 @@
 //
 // M0: symbols exist, log activity, and delegate to the engine core where the
 // subsystem exists (tag text is forwarded to the Lua `e:tag` path).
+#include "core/engine_context.h"
 #include "log/logger.h"
 #include "pack/pack_manager.h"
 #include "script/lua_engine.h"
@@ -20,20 +21,21 @@
 
 #include <jni.h>
 #include <cstring>
+#include <memory>
 #include <string>
 
 using namespace artc;
 
 namespace {
-artc::PackManager *g_packs = nullptr;
-artc::LuaEngine *g_lua = nullptr;
-JavaVM *g_vm = nullptr;
+// Single engine graph, owned by EngineContext (no raw g_packs/g_lua globals).
+// The headless DebugBridge bootstrap has no GL context, so it uses
+// EngineContext::Start(false) — no compositor.
+std::unique_ptr<EngineContext> g_ctx;
 
-bool EngineReady() { return g_packs && g_lua && g_lua->state(); }
+bool EngineReady() { return g_ctx && g_ctx->Started(); }
 } // namespace
 
-jint JNI_OnLoad(JavaVM *vm, void *) {
-    g_vm = vm;
+jint JNI_OnLoad(JavaVM *, void *) {
     artc::Log(kLogInfo, "compat engine: JNI_OnLoad");
     return JNI_VERSION_1_6;
 }
@@ -48,7 +50,7 @@ Java_com_ies_1net_artemis_ArtemisActivity_ExecuteTag(JNIEnv *env, jobject, jstri
     // M0: route through the Lua bridge tag table so script-visible state stays
     // in sync; M1 replaces this with the native tag dispatcher.
     if (EngineReady() && s) {
-        lua_State *L = g_lua->state();
+        lua_State *L = g_ctx->lua().state();
         lua_getglobal(L, "e");
         if (lua_istable(L, -1)) {
             lua_getfield(L, -1, "tag");
@@ -146,25 +148,24 @@ Java_com_ies_1net_artemis_debug_DebugBridge_nativeInstall(JNIEnv *env, jclass,
         artc::Log(kLogError, "nativeInstall: bad key hex");
         return;
     }
-    delete g_packs;
-    delete g_lua;
-    g_packs = new artc::PackManager();
-    if (!g_packs->OpenChain(dir, key)) {
+    // Headless assembly: no GL context on this path, so no compositor
+    // (matches the historical DebugBridge behavior exactly).
+    g_ctx = std::make_unique<artc::EngineContext>();
+    if (!g_ctx->Open(dir, "android", key)) {
         artc::Log(kLogError, "nativeInstall: cannot open pack chain at " + dir);
+        g_ctx.reset();
         return;
     }
-    g_lua = new artc::LuaEngine();
-    artc::Ini ini;
-    std::vector<uint8_t> ini_bytes;
-    if (g_packs->Read("system.ini", ini_bytes))
-        ini.Parse(std::string(ini_bytes.begin(), ini_bytes.end()));
-    g_lua->Init(g_packs, ini, "android",
-                ini.GetInt("ANDROID", "WIDTH", 1280),
-                ini.GetInt("ANDROID", "HEIGHT", 720));
+    if (!g_ctx->Start(/*with_compositor=*/false)) {
+        artc::Log(kLogError, "nativeInstall: engine start failed");
+        g_ctx.reset();
+        return;
+    }
+    artc::EngineContext::SetCurrent(g_ctx.get());
     artc::Log(kLogInfo, "nativeInstall: engine ready, packs=" +
-                            std::to_string(g_packs->Packs().size()));
+                            std::to_string(g_ctx->packs().Packs().size()));
     std::string err;
-    if (g_lua->RunPackScript("system/init.lua", &err))
+    if (g_ctx->lua().RunPackScript("system/init.lua", &err))
         artc::Log(kLogInfo, "init.lua executed");
     else
         artc::Log(kLogError, "init.lua failed: " + err);
@@ -183,10 +184,12 @@ Java_com_ies_1net_artemis_ArtemisActivity_OnReadyPlayAssetDelivery__III(JNIEnv *
 extern "C" __attribute__((visibility("default"))) void
 PauseAllInstance() {
     artc::Log(kLogInfo, "PauseAllInstance");
-    if (g_lua) g_lua->PauseAudio();
+    if (auto *ctx = EngineContext::Current(); ctx && ctx->Started())
+        ctx->lua().PauseAudio();
 }
 extern "C" __attribute__((visibility("default"))) void
 ResumeAllInstance() {
     artc::Log(kLogInfo, "ResumeAllInstance");
-    if (g_lua) g_lua->ResumeAudio();
+    if (auto *ctx = EngineContext::Current(); ctx && ctx->Started())
+        ctx->lua().ResumeAudio();
 }

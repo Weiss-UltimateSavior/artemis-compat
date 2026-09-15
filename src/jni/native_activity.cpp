@@ -31,9 +31,11 @@
 #include <vector>
 
 #include "log/logger.h"
+#include "core/engine_context.h"
 #include "pack/pack_manager.h"
 #include "script/lua_engine.h"
 #include "script/asb_parser.h"
+#include "script/dialog_request.h"
 #include "script/iet_interpreter.h"
 #include "config/ini.h"
 #include "render/renderer.h"
@@ -193,9 +195,10 @@ struct EngineState {
                                               // the renderer shuts down
     artc::Renderer renderer;
 
-    // Lua session survives boot so the frame loop can drive onEnterFrame and
-    // feed input. Engine-thread-only.
-    std::unique_ptr<artc::LuaEngine> lua;
+    // Engine graph (packs/ini/audio/compositor/lua/runner) survives boot so
+    // the frame loop can drive onEnterFrame and feed input.
+    // Engine-thread-only; created in EngineThreadMain.
+    std::unique_ptr<artc::EngineContext> ctx;
     int stage_w = 1280, stage_h = 720;
     int win_w = 0, win_h = 0;
 
@@ -325,85 +328,37 @@ void OnInputQueueDestroyed(ANativeActivity *, AInputQueue *queue) {
 // current GL context. On success the Lua session is kept in g_state.lua so the
 // frame loop can drive onEnterFrame and feed input; returns false when the
 // boot script is unusable.
-bool BootScene(PackManager &packs, const artc::Ini &ini,
-               artc::Compositor &compositor, artc::Renderer &renderer,
-               artc::AsbRunner *runner) {
-    const int stage_w = ini.GetInt("ANDROID", "WIDTH", 1280);
-    const int stage_h = ini.GetInt("ANDROID", "HEIGHT", 720);
-    compositor.SetPackManager(&packs);
-    compositor.Init(stage_w, stage_h); // builds the GLES2 program (ctx current)
-
-    g_state.lua = std::make_unique<artc::LuaEngine>();
-    // Saves live next to the pack (system.dat beside root.pfs), matching the
-    // original engine writing into the game folder.
-    {
-        const std::string &bp = packs.PackPath();
-        const size_t slash = bp.find_last_of('/');
-        g_state.lua->SetSaveDir(slash == std::string::npos
-                                    ? bp
-                                    : bp.substr(0, slash));
-    }
-    if (!g_state.lua->Init(&packs, ini, "android", stage_w, stage_h, &compositor)) {
-        LOGE("lua init failed");
-        g_state.lua.reset();
+bool BootScene(artc::EngineContext &ctx, artc::Renderer &renderer) {
+    if (!ctx.Start()) {
+        LOGE("engine start failed (lua init)");
         return false;
     }
     // Native [dialog] input box (name entry): Java AlertDialog + EditText.
-    g_state.lua->SetDialogHandler(ShowNativeInput);
-    g_state.stage_w = stage_w;
-    g_state.stage_h = stage_h;
+    ctx.lua().SetDialogHandler(ShowNativeInput);
+    g_state.stage_w = ctx.stageW();
+    g_state.stage_h = ctx.stageH();
     LOGI("lua ready; running boot script via iet interpreter");
-    artc::IetRunner iet(&packs, &*g_state.lua);
-    if (!iet.Run("system/first.iet")) {
+    if (!ctx.BootFramework()) {
         LOGE("first.iet missing; boot aborted");
-        g_state.lua.reset();
         return false;
     }
-    if (iet.Stopped()) LOGI("boot script hit [stop]");
     LOGI("boot sequence finished: adv framework active");
-
-    // Native script runner: the framework's [jump file=… label=…] tag hands
-    // control to the compiled .asb script (system flow: scriptMainloop loop).
-    runner->SetPackSource(&packs);
-    g_state.lua->SetScriptRunner(runner);
-    g_state.lua->SetJumpHandler([runner](const std::string &file,
-                                         const std::string &label) {
-        runner->Jump(file, label);
-    });
-    g_state.lua->SetCallHandler([runner](const std::string &file,
-                                         const std::string &label) {
-        runner->Call(file, label);
-    });
-    g_state.lua->SetStopHandler([runner](const std::string &tag) {
-        // [stop] halts the script until an explicit jump/call re-enters it;
-        // [return] pops the call frame. Popping on `stop` — the old upstream
-        // heuristic — let the main loop run past a pending choice.
-        if (tag == "stop") {
-            runner->Halt();
-            LOGI("asb: stop via lua tag (halt)");
-            return;
-        }
-        if (!runner->Return()) {
-            runner->Halt();
-            LOGI("asb: %s via lua tag", tag.c_str());
-        }
-    });
 
     // M2.1 smoke scene: drive the graphics tag path with a real pack image.
     // The tag route is identical to the game's own lyc/lyprop/flip calls.
     const char *bg_candidates[] = {"image/bg/bg01a.png", "image/bg/背景1.png"};
     bool bg_found = false;
     for (const char *cand : bg_candidates) {
-        if (!packs.Exists(cand)) continue;
+        if (!ctx.packs().Exists(cand)) continue;
         bg_found = true;
-        const std::string sw = std::to_string(stage_w);
-        const std::string sh = std::to_string(stage_h);
+        const std::string sw = std::to_string(g_state.stage_w);
+        const std::string sh = std::to_string(g_state.stage_h);
         const bool ok =
-            g_state.lua->DispatchTag("lyc", {{"id", "bg"}, {"file", cand}}) &&
-            g_state.lua->DispatchTag("lyprop", {{"id", "bg"},
-                                                {"x", "0"}, {"y", "0"},
-                                                {"w", sw}, {"h", sh}}) &&
-            g_state.lua->DispatchTag("flip", {});
+            ctx.lua().DispatchTag("lyc", {{"id", "bg"}, {"file", cand}}) &&
+            ctx.lua().DispatchTag("lyprop", {{"id", "bg"},
+                                             {"x", "0"}, {"y", "0"},
+                                             {"w", sw}, {"h", sh}}) &&
+            ctx.lua().DispatchTag("flip", {});
         if (ok) LOGI("smoke scene: %s loaded, flipped, presenting", cand);
         else LOGE("smoke scene: %s tag dispatch failed", cand);
         break;
@@ -434,24 +389,20 @@ void EngineThreadMain(ANativeActivity *activity) {
     }
     LOGI("pack chain base: %s", pack_path.c_str());
 
-    // 2) boot + render loop — everything GL lives on this thread
-    PackManager packs;
-    if (!packs.OpenChain(pack_path, {})) {
-        LOGE("OpenChain failed for %s", pack_path.c_str());
+    // 2) boot + render loop — everything GL lives on this thread.
+    // The engine graph (packs/ini/audio/compositor/lua/runner) is owned by
+    // one EngineContext; this host only drives it.
+    auto ctx = std::make_unique<artc::EngineContext>();
+    if (!ctx->Open(pack_path, "android")) {
+        LOGE("engine open failed for %s", pack_path.c_str());
         return;
     }
-    LOGI("pack chain opened: %zu pack(s), first pack %u file(s)",
-         packs.Packs().size(), packs.Packs()[0]->FileCount());
-
-    artc::Ini ini;
-    std::vector<uint8_t> ini_bytes;
-    if (packs.Read("system.ini", ini_bytes))
-        ini.Parse(std::string(ini_bytes.begin(), ini_bytes.end()));
+    // Publish for the JNI shims (audio pause hooks) — registry, not ownership.
+    artc::EngineContext::SetCurrent(ctx.get());
 
     artc::Renderer renderer;
-    artc::Compositor compositor;
-    artc::AsbRunner runner;
     bool booted = false;
+    uint64_t drawn_rev = ~0ull;   // redraw gate: last presented layer revision
 
     while (g_state.running) {
         ANativeWindow *wanted, *current, *lost;
@@ -464,9 +415,10 @@ void EngineThreadMain(ANativeActivity *activity) {
         }
         if (wanted != current) {
             renderer.Shutdown();
-            compositor.ReleaseGl();   // old context is gone; textures die with it
-            booted = false;           // re-boot the scene on the new context
-            g_state.lua.reset();
+            ctx->compositor().ReleaseGl();  // old context is gone; textures die with it
+            booted = false;                 // re-boot the scene on the new context
+            drawn_rev = ~0ull;              // new surface: force a first draw
+            ctx->ResetSession();
             if (current) ANativeWindow_release(current);
             current = wanted;
             if (current && !renderer.Init(current))
@@ -478,15 +430,16 @@ void EngineThreadMain(ANativeActivity *activity) {
 
         // [reset] tag = engine reboot (language-select flow ends this way):
         // drop the Lua session so the boot chain re-runs on the next frame.
-        if (g_state.lua && g_state.lua->ConsumeResetRequest()) {
+        if (ctx->Started() && ctx->lua().ConsumeResetRequest()) {
             LOGI("engine reset requested; re-running boot chain");
-            compositor.ReleaseGl();
+            ctx->compositor().ReleaseGl();
             booted = false;
-            g_state.lua.reset();
+            drawn_rev = ~0ull;
+            ctx->ResetSession();
         }
         // [exit] tag = the framework's go_exit (title exit → dialog YES):
         // terminate the app from the game thread.
-        if (g_state.lua && g_state.lua->ConsumeExitRequest()) {
+        if (ctx->Started() && ctx->lua().ConsumeExitRequest()) {
             LOGI("engine exit requested; finishing activity");
             ANativeActivity_finish(activity);
             g_state.running = false;
@@ -497,23 +450,23 @@ void EngineThreadMain(ANativeActivity *activity) {
             g_state.win_w = renderer.Width();
             g_state.win_h = renderer.Height();
             if (!booted) {
-                renderer.SetStage(ini.GetInt("ANDROID", "WIDTH", 1280),
-                                  ini.GetInt("ANDROID", "HEIGHT", 720),
-                                  ini.GetInt("COMMON", "SIDECUT", 0) == 1);
-                booted = BootScene(packs, ini, compositor, renderer, &runner);
+                renderer.SetStage(ctx->stageW(), ctx->stageH(),
+                                  ctx->ini().GetInt("COMMON", "SIDECUT", 0) == 1);
+                booted = BootScene(*ctx, renderer);
                 if (!booted) break; // nothing to present; stop the thread
             }
+            artc::LuaEngine &lua = ctx->lua();
+            artc::AsbRunner &runner = ctx->runner();
             // Drain the enqueueTag queue at a command boundary (after each
             // script command AND after input-dispatched calllua). The
             // original engine processes the queue right after every
             // command; a queued "wait" (from eqwait) engages the wait
             // here, which stops further draining.
             auto drain = [&]() {
-                while (g_state.lua && !g_state.lua->IsWaiting() &&
-                       g_state.lua->HasQueuedTag()) {
+                while (!lua.IsWaiting() && lua.HasQueuedTag()) {
                     std::string name;
                     std::vector<std::pair<std::string, std::string>> attrs;
-                    if (!g_state.lua->PopQueuedTag(&name, &attrs)) break;
+                    if (!lua.PopQueuedTag(&name, &attrs)) break;
                     if (name == "jump" || name == "call") {
                         std::string file, label;
                         for (const auto &kv : attrs) {
@@ -524,12 +477,12 @@ void EngineThreadMain(ANativeActivity *activity) {
                              name.c_str(), file.c_str(), label.c_str());
                         runner.Jump(file, label);
                     } else {
-                        g_state.lua->DispatchTag(name, attrs, false);
+                        lua.DispatchTag(name, attrs, false);
                     }
                 }
             };
             // 1) drain queued input into the Lua-side key state
-            if (g_state.lua) {
+            if (ctx->Started()) {
                 std::deque<EngineState::RawInput> batch;
                 {
                     std::lock_guard<std::mutex> lk(g_state.input_mutex);
@@ -541,76 +494,83 @@ void EngineThreadMain(ANativeActivity *activity) {
                 float tap_x = 0, tap_y = 0;
                 for (const auto &ev : batch) {
                     if (ev.is_key) {
-                        if (ev.down) g_state.lua->PushKeyDown(ev.key);
-                        else g_state.lua->PushKeyUp(ev.key);
+                        if (ev.down) lua.PushKeyDown(ev.key);
+                        else lua.PushKeyUp(ev.key);
                     } else if (ev.is_move) {
                         // drag continuation: move the pinned (draggable) layer
-                        g_state.lua->SetMousePoint(renderer.StageX(ev.x),
-                                                   renderer.StageY(ev.y));
-                        g_state.lua->DragMove(renderer.StageX(ev.x),
-                                              renderer.StageY(ev.y));
+                        lua.SetMousePoint(renderer.StageX(ev.x),
+                                          renderer.StageY(ev.y));
+                        lua.DragMove(renderer.StageX(ev.x),
+                                     renderer.StageY(ev.y));
                     } else {
-                        g_state.lua->SetMousePoint(renderer.StageX(ev.x), renderer.StageY(ev.y));
+                        lua.SetMousePoint(renderer.StageX(ev.x), renderer.StageY(ev.y));
                         if (ev.down) {
-                            g_state.lua->PushKeyDown(1); // tap = key id 1
+                            lua.PushKeyDown(1); // tap = key id 1
                             touch_count = 1;
-                            g_state.lua->BeginDrag(renderer.StageX(ev.x),
-                                                   renderer.StageY(ev.y));
+                            lua.BeginDrag(renderer.StageX(ev.x),
+                                          renderer.StageY(ev.y));
                         } else {
-                            g_state.lua->PushKeyUp(1);
+                            lua.PushKeyUp(1);
                             touch_count = 0;
-                            was_dragging = g_state.lua->DragMoved();
-                            g_state.lua->EndDrag();
+                            was_dragging = lua.DragMoved();
+                            lua.EndDrag();
                             if (!was_dragging) {   // a clean tap, not a drag
                                 tapped = true;
                                 tap_x = ev.x;
                                 tap_y = ev.y;
                             }
                         }
-                        g_state.lua->SetTouchCount(touch_count);
+                        lua.SetTouchCount(touch_count);
                     }
                 }
                 // M3: hit-test taps against lyevent-registered layers
-                if (tapped && g_state.lua)
-                    g_state.lua->ClickAt(renderer.StageX(tap_x), renderer.StageY(tap_y));
+                if (tapped)
+                    lua.ClickAt(renderer.StageX(tap_x), renderer.StageY(tap_y));
                 // 2) per-frame Lua work (framework vsync polls the key state)
-                g_state.lua->RunEnterFrame();
+                lua.RunEnterFrame();
                 // input-dispatched calllua may enqueue (estag call etc.)
                 drain();
             }
             // 2) native script execution (compiled .asb tag stack)
-            if (g_state.lua && runner.Loaded() && !runner.Halted() &&
-                !g_state.lua->IsWaiting()) {
+            if (runner.Loaded() && !runner.Halted() && !lua.IsWaiting()) {
                 for (int steps = 0; steps < 4 && runner.Loaded() &&
                                     !runner.Halted(); ++steps) {
                     // Lua may jump/call/return while the instruction runs;
                     // ExecuteLine does not retain references into the script.
-                    runner.ExecuteLine(*g_state.lua);
+                    runner.ExecuteLine(lua);
                     // command-boundary queue processing (estag chains)
                     drain();
-                    if (g_state.lua->IsWaiting()) break;
+                    if (lua.IsWaiting()) break;
                 }
-            } else if (g_state.lua && !g_state.lua->IsWaiting() &&
-                       g_state.lua->HasQueuedTag()) {
+            } else if (!lua.IsWaiting() && lua.HasQueuedTag()) {
                 // runner not loaded yet: still process queued tags (the boot
                 // estag03 chain enqueued by first.iet starts the asb runner).
                 drain();
             }
             // Advance [lytween] / [trans] animations to this frame's time
             // before compositing (bumps the layer revision while moving).
-            if (g_state.lua) compositor.Update(g_state.lua->NowMs());
-                // 3) present the current layer state
-            renderer.Clear();   // clears the full surface (letterbox bars too)
-            compositor.Draw();  // layers (script [flip] draws only)
-            renderer.Present(); // single present per frame — no flicker
-            if (g_state.lua) g_state.lua->EndFrame(); // clear per-frame edges
+            ctx->compositor().Update(lua.NowMs());
+                // 3) present the current layer state — redraw gate (T2-2):
+                // a fully static scene (no revision change, no pending tween/
+                // text/transition) skips clear+draw+swap entirely.
+            const double now = lua.NowMs();
+            const bool animating =
+                ctx->compositor().PendingAnimationMs(now) > 0 ||
+                ctx->compositor().TransitionActive() ||
+                ctx->compositor().PendingTextMs(now) > 0;
+            if (drawn_rev != ctx->compositor().Revision() || animating) {
+                renderer.Clear();   // clears the full surface (letterbox bars too)
+                ctx->compositor().Draw();  // layers (script [flip] draws only)
+                renderer.Present(); // single present per frame — no flicker
+                drawn_rev = ctx->compositor().Revision();
+            }
+            lua.EndFrame();     // clear per-frame edges
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
 
     // exit: release GL state and window refs
-    g_state.lua.reset();
-    compositor.Shutdown();
+    ctx->Shutdown();
     renderer.Shutdown();
     {
         std::lock_guard<std::mutex> lk(g_state.mutex);

@@ -1531,8 +1531,11 @@ void Compositor::Draw() {
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // sort by z (stable: preserve insertion order for equal z)
-    std::vector<const Layer *> sorted;
+    // sort by z (stable: preserve insertion order for equal z). Scratch vector
+    // is a member so repeated frames do not re-allocate (T2-2).
+    std::vector<const Layer *> &sorted = draw_sorted_;
+    sorted.clear();
+    sorted.reserve(layers_.size());
     for (const auto &l : layers_) sorted.push_back(&l);
     std::stable_sort(sorted.begin(), sorted.end(),
                      [](const Layer *a, const Layer *b) {
@@ -1566,7 +1569,21 @@ void Compositor::Draw() {
         if (!l->glyphs.empty()) {
             // Glyph cells reference shared atlas pages (persistent cache);
             // group the quads per page texture and draw one batch each.
-            std::map<uint32_t,std::vector<float>> runs;
+            // Scratch runs are reused across frames (capacity kept).
+            size_t used_runs = 0;
+            auto run_for = [&](uint32_t tex) -> std::vector<float> & {
+                for (size_t i = 0; i < used_runs; ++i)
+                    if (draw_glyph_runs_[i].first == tex)
+                        return draw_glyph_runs_[i].second;
+                if (used_runs == draw_glyph_runs_.size())
+                    draw_glyph_runs_.emplace_back(tex, std::vector<float>());
+                else
+                    draw_glyph_runs_[used_runs].first = tex;
+                std::vector<float> &v = draw_glyph_runs_[used_runs].second;
+                v.clear();
+                ++used_runs;
+                return v;
+            };
             for (const auto& g:l->glyphs) {
                 float gx=g.x, gy=g.y, alpha=1;
                 for (const auto& tw:l->text_in) {
@@ -1580,14 +1597,14 @@ void Compositor::Draw() {
                 if (alpha<=0 || g.w<=0 || g.h<=0) continue;
                 const auto p0=transform.Point(gx,gy), p1=transform.Point(gx+g.w,gy);
                 const auto p2=transform.Point(gx,gy+g.h), p3=transform.Point(gx+g.w,gy+g.h);
-                auto& vertices=runs[g.tex];
-                vertices.reserve(vertices.size()+30);
+                auto& vertices=run_for(g.tex);
                 vertices.insert(vertices.end(),{p0.first,p0.second,g.u0,g.v0,alpha,
                     p1.first,p1.second,g.u1,g.v0,alpha, p2.first,p2.second,g.u0,g.v1,alpha,
                     p2.first,p2.second,g.u0,g.v1,alpha, p1.first,p1.second,g.u1,g.v0,alpha,
                     p3.first,p3.second,g.u1,g.v1,alpha});
             }
-            for (const auto& kv:runs) {
+            for (size_t ri = 0; ri < used_runs; ++ri) {
+                const auto& kv = draw_glyph_runs_[ri];
                 if (kv.second.empty()) continue;
                 glBindTexture(GL_TEXTURE_2D, kv.first);
                 glUniform1f(prog_.u_alpha,ea);
@@ -1605,8 +1622,9 @@ void Compositor::Draw() {
         }
         if (!l->mesh.empty() && l->mesh.size() % 4 == 0) {
             // Warped triangle list (E-mote mesh): transform every vertex and
-            // draw with per-vertex uv.
-            std::vector<float> vertices;
+            // draw with per-vertex uv. Scratch buffer is a member (T2-2).
+            std::vector<float> &vertices = draw_mesh_vertices_;
+            vertices.clear();
             vertices.reserve(l->mesh.size() / 4 * 5);
             for (size_t i = 0; i + 3 < l->mesh.size(); i += 4) {
                 const auto p = transform.Point(l->mesh[i], l->mesh[i + 1]);
@@ -1641,8 +1659,16 @@ void Compositor::Draw() {
         glEnableVertexAttribArray(prog_.a_uv);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     };
-    std::map<std::string,uint32_t> textures;
-    for(const auto& l:layers_)if(l.texture)textures[l.id]=l.texture;
+    // Texture table for effect bindings: rebuilt only when a mutation bumped
+    // the revision; the vector keeps its capacity so steady state is
+    // allocation-free (T2-2).
+    if (draw_textures_rev_ != revision_) {
+        draw_textures_.clear();
+        for (const auto &l : layers_)
+            if (l.texture) draw_textures_.emplace_back(l.id, l.texture);
+        draw_textures_rev_ = revision_;
+    }
+    const std::vector<std::pair<std::string, uint32_t>> &textures = draw_textures_;
     std::function<void(size_t,size_t,size_t,uint32_t,bool,float)> draw_range;
     draw_range=[&](size_t first,size_t last,size_t depth,uint32_t target,bool top_down,float inherited) {
         for(size_t i=first;i<last;) {

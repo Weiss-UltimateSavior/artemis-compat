@@ -171,7 +171,7 @@ uint32_t LayerShaders::Begin(size_t depth,int w,int h,uint32_t parent,bool top_d
     return g.raw.fbo;
 }
 bool LayerShaders::End(size_t depth,const LayerEffect& effect,uint32_t parent,bool top_down,
-                       float opacity,const std::map<std::string,uint32_t>& textures,const LayerCoverage& coverage) {
+                       float opacity,const std::vector<std::pair<std::string,uint32_t>>& textures,const LayerCoverage& coverage) {
     auto& g=groups_.at(depth);
     glDisable(GL_BLEND);glUseProgram(copy_);Uniform(copy_,"flip",0);
     glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,g.raw.texture);
@@ -209,7 +209,12 @@ bool LayerShaders::End(size_t depth,const LayerEffect& effect,uint32_t parent,bo
                 else {
                     auto binding=effect.parameters.find(length>1?key+"["+std::to_string(n)+"]":key);
                     if(binding==effect.parameters.end() && n==0)binding=effect.parameters.find(key);
-                    if(binding!=effect.parameters.end())if(auto found=textures.find(binding->second);found!=textures.end())texture=found->second;
+                    if(binding!=effect.parameters.end()) {
+                        // Small table (one entry per textured layer): linear scan
+                        // keeps the draw path allocation-free (T2-2).
+                        for(const auto& entry:textures)
+                            if(entry.first==binding->second) { texture=entry.second; break; }
+                    }
                 }
                 glActiveTexture(GL_TEXTURE0+unit);glBindTexture(GL_TEXTURE_2D,texture);units.push_back(unit++);
             }
@@ -278,6 +283,6 @@ bool LayerShaders::Load(const std::string& id,const std::string& source) {
 }
 void LayerShaders::ReleaseGl() {}
 uint32_t LayerShaders::Begin(size_t,int,int,uint32_t,bool){return 0;}
-bool LayerShaders::End(size_t,const LayerEffect&,uint32_t,bool,float,const std::map<std::string,uint32_t>&,const LayerCoverage&){return false;}
+bool LayerShaders::End(size_t,const LayerEffect&,uint32_t,bool,float,const std::vector<std::pair<std::string,uint32_t>>&,const LayerCoverage&){return false;}
 #endif
 }

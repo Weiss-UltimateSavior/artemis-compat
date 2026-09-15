@@ -6,6 +6,7 @@
 //   artc ini     <pack> <name> [--key <hex>]  print an ini from the pack
 //   artc runlua  <pack> <script> --key <hex> [--os <os>]  boot the Lua bridge
 #include "config/ini.h"
+#include "core/engine_context.h"
 #include "log/logger.h"
 #include "pack/pack_manager.h"
 #include "pack/psb.h"
@@ -204,29 +205,21 @@ int main(int argc, char **argv) {
 
     if (cmd == "runlua" || cmd == "runiet") {
         if (name.empty()) return Usage();
-        const bool do_call = (os_name == "call");
-        PackManager packs;
-        if (!packs.OpenChain(pack, key)) return 1;
-        std::printf("packs loaded: %zu\n", packs.Packs().size());
-
-        Ini ini;
-        std::vector<uint8_t> ini_bytes;
-        if (packs.Read("system.ini", ini_bytes))
-            ini.Parse(std::string(ini_bytes.begin(), ini_bytes.end()));
-
-        LuaEngine lua;
-        if (!lua.Init(&packs, ini, os_name, ini.GetInt("ANDROID", "WIDTH", 1280),
-                      ini.GetInt("ANDROID", "HEIGHT", 720)))
-            return 1;
+        // Headless assembly (no GL): EngineContext owns the graph; audio tags
+        // no-op on this path exactly as the old host stub did.
+        auto ctx = std::make_unique<artc::EngineContext>();
+        if (!ctx->Open(pack, os_name, key)) return 1;
+        if (!ctx->Start(/*with_compositor=*/false)) return 1;
+        std::printf("packs loaded: %zu\n", ctx->packs().Packs().size());
         std::string err;
-        if (cmd == "runlua" && !lua.RunPackScript(name, &err)) {
+        if (cmd == "runlua" && !ctx->lua().RunPackScript(name, &err)) {
             std::fprintf(stderr, "lua error: %s\n", err.c_str());
             return 1;
         }
         if (cmd == "runlua")
             std::printf("lua script finished: %s\n", name.c_str());
         if (cmd == "runiet") {
-            IetRunner iet(&packs, &lua);
+            artc::IetRunner iet(&ctx->packs(), &ctx->lua());
             if (!iet.Run(name)) return 1;
             std::printf("iet finished: %s (stopped=%d)\n", name.c_str(),
                         iet.Stopped() ? 1 : 0);

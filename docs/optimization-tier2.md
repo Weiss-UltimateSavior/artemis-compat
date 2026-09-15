@@ -95,12 +95,16 @@ private:
 
 ### 验收标准
 
-- [ ] boot/装配序列全仓唯一（grep 不到第二份 `new PackManager` + `new LuaEngine` 组合）。
-- [ ] `g_packs/g_lua/g_vm` 删除；`g_state` 不再持有引擎裸指针。
-- [ ] 真机全流程：首启（含 `nativeInstall` 路径）、窗口旋转、GL 丢失恢复
-      （`native_activity.cpp:465-476` 三态交接）、退后台/回前台。
-- [ ] mac 宿主与 Android 行为一致（同一游戏目录冒烟）。
-- [ ] 全量 ctest 绿。
+> **落地状态（本次）**：装配收敛与所有权改造已完成并本地验证；标 [真机] 的项
+> 需设备复验（mac 宿主与 `artc drive` 已冒烟通过）。
+
+- [x] boot/装配序列全仓唯一（grep 不到第二份 `new PackManager` + `new LuaEngine` 组合）。
+- [x] `g_packs/g_lua/g_vm` 删除；`g_state` 不再持有引擎裸指针（改持
+      `unique_ptr<EngineContext>`）。
+- [ ] [真机] 全流程：首启（含 `nativeInstall` 路径）、窗口旋转、GL 丢失恢复
+      （三态交接）、退后台/回前台。
+- [x] mac 宿主与 Android 行为一致（同一游戏目录冒烟 + 两目标构建）。
+- [x] 全量 ctest 绿（16/16）。
 
 ### 风险与缓解
 
@@ -162,11 +166,17 @@ if (ctx.compositor().Revision() != last_drawn_rev_ || animating)
 
 ### 验收标准
 
-- [ ] Draw 路径零每帧堆分配（可用 malloc 拦截计数或 AddressSanitizer 断言）。
-- [ ] 静止场景 GL 绘制调用降为 0 或仅 present；整体 GPU 占用下降（真机
-      `dumpsys gfxinfo` / battery historian 观察）。
-- [ ] 五个重点场景（含动画+过渡+视频）真机无漏帧、无卡死。
-- [ ] `compositor_regressions` 全绿。
+> **落地状态（本次）**：scratch 复用、revision 门控、宿主门控已完成；mac 宿主
+> 冒烟（boot logo → 标题动画 → 静止跳过）正常。GPU 量化与五场景全量复验留
+> [真机]。
+
+- [x] Draw 路径零每帧堆分配（scratch 成员 + 纹理表 revision 门控重建；
+      `std::vector::clear()` 保容量）。
+- [x] 静止场景 GL 绘制调用降为 0（不再 `Clear+Draw+Present`；动画/过渡/文本
+      期间照常每帧绘制）。
+- [ ] [真机] 五个重点场景（含动画+过渡+视频）无漏帧、无卡死；`dumpsys gfxinfo`
+      对比 GPU 占用。
+- [ ] `compositor_regressions`（需 ANGLE，`ARTC_TEST_GLES=ON`）——本机未跑。
 
 ### 风险与缓解
 
@@ -234,11 +244,14 @@ OpenSL 回调:
 
 ### 验收标准
 
-- [ ] OpenSL 回调内无解码调用（代码断言：回调函数体只剩 ring 拷贝 + Queue）。
-- [ ] `audio.cpp:150-151` Queue 返回值已检查并处理。
-- [ ] 回归：`audio_stream_regressions` 全绿 + 新增水位/接续用例。
-- [ ] 真机 30 分钟并发播放零 underrun（日志断言）。
-- [ ] 低端机（或限频真机）对话推进 + BGM 场景无爆音。
+> **落地状态（本次）**：feed 线程 + SPSC ring 已实现，回调只剩拷贝；ring 行为
+> 已入 `audio_stream_regressions`。OpenSL 真机指标留 [真机]。
+
+- [x] OpenSL 回调内无解码调用（回调函数体只剩 ring 拷贝 + 静音填充 + `Queue`）。
+- [x] `audio.cpp` 两次启动 `Queue()` 返回值均已检查。
+- [x] 回归：`audio_stream_regressions` 全绿 + 新增水位/回绕/SPSC 顺序用例。
+- [ ] [真机] 30 分钟并发播放零 underrun（`audio: underruns=` 日志断言）。
+- [ ] [真机] 低端机（或限频真机）对话推进 + BGM 场景无爆音。
 
 ### 风险与缓解
 

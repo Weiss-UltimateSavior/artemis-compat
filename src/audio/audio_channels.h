@@ -19,6 +19,10 @@ public:
     void Pan(const std::string& channel, int pan, int time_ms, double now_ms);
     bool IsPlaying(const std::string& channel) const;
     void Update(double now_ms);
+    // Drop all channel state (the [alldelete] tag): stop nothing at the output
+    // — the caller does Audio::StopAll — and forget voices/current files so
+    // the next play starts from a clean slate.
+    void Reset();
 
 private:
     struct Ramp {

@@ -326,6 +326,14 @@ private:
     // persistent glyph cache (see glyph_atlas.h): rasterized cells survive
     // SetText calls; the compositor owns page textures + upload generations.
     GlyphAtlas glyph_atlas_;
+    // Draw() scratch, reused across frames (T2-2): the hot path must not
+    // allocate per frame. Vector clear() keeps capacity, so a stable scene
+    // (and a steadily-changing one) reuses the same storage.
+    std::vector<const Layer *> draw_sorted_;
+    std::vector<std::pair<std::string, uint32_t>> draw_textures_;
+    uint64_t draw_textures_rev_ = ~0ull;   // revision the table was built at
+    std::vector<std::pair<uint32_t, std::vector<float>>> draw_glyph_runs_;
+    std::vector<float> draw_mesh_vertices_;
     std::map<size_t, uint32_t> glyph_page_textures_;
     std::map<size_t, uint64_t> glyph_page_uploaded_;
 };

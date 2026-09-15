@@ -88,4 +88,9 @@ void AudioChannels::Update(double now) {
     }
 }
 
+void AudioChannels::Reset() {
+    voices_.clear();
+    current_.clear();
+}
+
 } // namespace artc

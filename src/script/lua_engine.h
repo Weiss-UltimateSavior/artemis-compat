@@ -43,8 +43,11 @@ class AsbRunner;
 class LuaEngine {
 public:
     // `systemIni` supplies screen size / os defaults for the `var` tag.
+    // `audio`/`sounds` are non-owning (EngineContext owns them); null means
+    // the audio tags no-op (headless/CLI hosts).
     bool Init(PackManager *packs, const Ini &systemIni, const std::string &osName,
-              int screenWidth, int screenHeight, Compositor *compositor = nullptr);
+              int screenWidth, int screenHeight, Compositor *compositor = nullptr,
+              Audio *audio = nullptr, AudioChannels *sounds = nullptr);
     // Load and execute a Lua source from the pack chain (e.g. "system/init.lua").
     bool RunPackScript(const std::string &path, std::string *errorOut);
     // Execute a Lua chunk (used by the iet [lua] blocks).
@@ -412,7 +415,7 @@ private:
     std::map<std::string, std::string> onsoundfinish_;
     // A [trans] tag began a transition; its following wait gates on animation.
     bool transition_wait_ = false;
-    // audio backend (splay/seplay/voplay) — raw ptr, owned by this engine
+    // audio backend (splay/seplay/voplay) — non-owning (EngineContext owns)
     Audio *audio_ = nullptr;
     AudioChannels *sounds_ = nullptr;
     std::map<std::string, std::unique_ptr<VideoPlayer>> videos_;
