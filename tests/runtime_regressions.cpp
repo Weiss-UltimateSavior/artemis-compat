@@ -4,8 +4,8 @@
 #include "script/lua_engine.h"
 #include "script/asb_parser.h"
 #include "script/expression.h"
-#include "script/native_save.h"
-#include "script/save_storage.h"
+#include "save/native_save.h"
+#include "util/save_storage.h"
 #include "emote_scene_fixture.h"
 #include <zlib.h>
 #include "render/compositor.h"

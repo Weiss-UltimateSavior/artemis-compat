@@ -26,7 +26,7 @@
 #include <set>
 #include <cstdio>
 #include <limits>
-#include "script/save_storage.h"
+#include "util/save_storage.h"
 
 namespace artc {
 

@@ -10,7 +10,8 @@
 // the render surface by an orthographic transform in the shader.
 #pragma once
 #include "render/layer_shader.h"
-#include "render/snapshot_image.h"
+#include "util/snapshot_image.h"
+#include "util/text.h"
 #include <functional>
 #include <map>
 #include <string>
@@ -27,10 +28,6 @@ struct TextGlyph {
     float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
     double start_ms = 0;
     size_t order = 0;
-};
-struct TextRuby {
-    size_t start = 0, length = 0; // UTF-8 byte range in the base text
-    std::string text;
 };
 struct TextTween {
     std::string param;
@@ -319,6 +316,7 @@ private:
     std::string font_path_;
     void *font_info_ = nullptr;
     bool font_ready_ = false;
+
 };
 
 } // namespace artc

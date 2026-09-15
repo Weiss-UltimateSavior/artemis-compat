@@ -12,11 +12,11 @@
 #pragma once
 #include "config/ini.h"
 #include "pack/pack_manager.h"
-#include "script/input_state.h"
-#include "script/auto_read.h"
-#include "render/compositor.h"
-#include "render/video_player.h"
-#include "render/emote_player.h"
+#include "input/input_state.h"
+#include "input/auto_read.h"
+#include "script/dialog_request.h"
+#include "util/snapshot_image.h"
+#include "util/text.h"
 
 #include "lua.hpp"
 #include <chrono>
@@ -32,23 +32,9 @@ struct lua_State;
 
 namespace artc {
 
-// [dialog ... textfield=… textfieldsize=… varname=…] — a host-modal box.
-// Three framework variants share this tag:
-//   message only (no textfield/varname)  -> OK alert
-//   varname present                      -> yes/no confirm (result -> varname)
-//   textfield present                    -> text input (text -> textfield var)
-struct DialogRequest {
-    std::string title;
-    std::string message;
-    std::string textfield;   // variable that receives the entered text
-    int textfieldsize = 0;   // max characters (0 = host default)
-    bool has_input = false;  // textfield present
-    bool has_result = false; // varname present (yes/no confirm)
-    std::string text;        // filled by the host
-    bool accepted = false;   // filled by the host (OK / confirm-yes / dismissed)
-};
-
 class Compositor;
+class VideoPlayer;
+class EmotePlayer;
 class Audio;
 class AudioChannels;
 class AsbRunner;
@@ -197,10 +183,7 @@ public:
     // persist the script-visible variables (set via e:tag{"var", name, data})
     // so a [reset] reboot can restore sys/conf/gscr. The host loop provides
     // the game directory (pack location) through SetSaveDir.
-    void SetSaveDir(const std::string &dir) {
-        save_dir_=dir;sysvals_["savepath"]=dir;
-        if(compositor_)compositor_->SetSaveDirectory(dir);
-    }
+    void SetSaveDir(const std::string &dir);
     const std::string &SaveDir() const { return save_dir_; }
     // Persist / restore the script variable bank (fsave_pluto values) around
     // the [save] tag / a [reset] reboot.
@@ -405,6 +388,10 @@ private:
     std::chrono::steady_clock::time_point ClockNow() const;
 
 public:
+    // Out-of-line so the unique_ptr<VideoPlayer/EmotePlayer> members keep
+    // incomplete-type forward declarations in consumer TUs (libc++'s map
+    // default-ctor instantiates ~__tree, which needs complete types).
+    LuaEngine();
     ~LuaEngine(); // closes the lua_State
 };
 

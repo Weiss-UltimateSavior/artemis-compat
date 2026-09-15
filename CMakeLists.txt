@@ -67,6 +67,8 @@ file(GLOB_RECURSE ARTC_CORE_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/log/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/render/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/save/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/input/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/util/*.cpp)
 add_library(artemis_core STATIC ${ARTC_CORE_SOURCES})
 target_include_directories(artemis_core PRIVATE

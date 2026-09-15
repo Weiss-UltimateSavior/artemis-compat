@@ -1,4 +1,4 @@
-#include "render/snapshot_image.h"
+#include "util/snapshot_image.h"
 #include <zlib.h>
 #include <algorithm>
 #include <cmath>
