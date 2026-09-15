@@ -25,6 +25,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -209,6 +210,92 @@ public:
 
 private:
     static int l_tag(lua_State *L);
+    // ---- e:tag dispatch (l_tag) ----
+    // Handlers are extracted per domain (lua_tags_*.cpp); l_tag itself is a
+    // thin dispatcher (lua_tag_dispatch.cpp). Exact-name handlers run after
+    // the shared attr map `m` (values ResolveValue'd) is built; raw handlers
+    // read attrs straight off the Lua table before `m` exists. A handler
+    // returning false mirrors the original if-chain fall-through: a gate
+    // (compositor_ / sounds_ / …) was not met, nothing happened and the tag
+    // ends as a no-op.
+    using TagAttrs = std::map<std::string, std::string>;
+    using TagHandler = bool (LuaEngine::*)(const std::string &tag, TagAttrs &m);
+    using TagRawHandler = bool (LuaEngine::*)(lua_State *L);
+    // Common path: debug log + first-occurrence trace + attr map build.
+    TagAttrs TraceAndCollectAttrs(lua_State *L, const std::string &tagname);
+    static const std::unordered_map<std::string, TagRawHandler> &RawTagTable();
+    static const std::unordered_map<std::string, TagHandler> &TagTable();
+    // var / debug (lua_tags_var.cpp)
+    bool TagVarRaw(lua_State *L);
+    bool TagDebugRaw(lua_State *L);
+    // input / auto-mode / event registries (lua_tags_input.cpp)
+    bool TagAutoMode(const std::string &tag, TagAttrs &m);
+    bool TagExecAutoMode(const std::string &tag, TagAttrs &m);
+    bool TagAutoModeEvent(const std::string &tag, TagAttrs &m);
+    bool TagKeyConfig(const std::string &tag, TagAttrs &m);
+    bool TagClickWait(const std::string &tag, TagAttrs &m);
+    bool TagCallLua(const std::string &tag, TagAttrs &m);
+    bool TagSetOnPush(const std::string &tag, TagAttrs &m);
+    bool TagSoundFinish(const std::string &tag, TagAttrs &m);
+    bool TagGenericSetOn(const std::string &tag, TagAttrs &m);
+    // navigation / wait / system save (lua_tags_nav.cpp)
+    bool TagWait(const std::string &tag, TagAttrs &m);
+    bool TagStopReturn(const std::string &tag, TagAttrs &m);
+    bool TagJump(const std::string &tag, TagAttrs &m);
+    bool TagCall(const std::string &tag, TagAttrs &m);
+    bool TagReset(const std::string &tag, TagAttrs &m);
+    bool TagExit(const std::string &tag, TagAttrs &m);
+    bool TagSave(const std::string &tag, TagAttrs &m);
+    bool TagLoad(const std::string &tag, TagAttrs &m);
+    bool TagTakeSs(const std::string &tag, TagAttrs &m);
+    bool TagSaveSs(const std::string &tag, TagAttrs &m);
+    bool TagWt(const std::string &tag, TagAttrs &m);
+    bool TagNoOp(const std::string &tag, TagAttrs &m);
+    // audio (lua_tags_audio.cpp)
+    bool TagAudio(const std::string &tag, TagAttrs &m);
+    bool TagAllSoundStopRaw(lua_State *L);
+    // layers / transitions / video (lua_tags_layer.cpp)
+    bool TagLyrenameRaw(lua_State *L);
+    bool TagVideo(const std::string &tag, TagAttrs &m);
+    bool TagLyShader(const std::string &tag, TagAttrs &m);
+    bool TagLyEvent(const std::string &tag, TagAttrs &m);
+    bool TagLyCreate(const std::string &tag, TagAttrs &m);
+    bool TagLyProp(const std::string &tag, TagAttrs &m);
+    bool TagTweenSet(const std::string &tag, TagAttrs &m);
+    bool TagTweenSetEnd(const std::string &tag, TagAttrs &m);
+    bool TagLyTween(const std::string &tag, TagAttrs &m);
+    bool TagLyTweenDel(const std::string &tag, TagAttrs &m);
+    bool TagLyDel(const std::string &tag, TagAttrs &m);
+    bool TagFlip(const std::string &tag, TagAttrs &m);
+    bool TagTrans(const std::string &tag, TagAttrs &m);
+    bool TagLyEdit(const std::string &tag, TagAttrs &m);
+    bool TagAnime(const std::string &tag, TagAttrs &m);
+    bool TagUiTrans(const std::string &tag, TagAttrs &m);
+    bool TagLyDrag(const std::string &tag, TagAttrs &m);
+    bool TagHide(const std::string &tag, TagAttrs &m);
+    // message-layer text pipeline (lua_tags_text.cpp)
+    bool TagFontHeightRaw(lua_State *L);
+    bool TagProhibitRaw(lua_State *L);
+    bool TagWordpartsRaw(lua_State *L);
+    bool TagIndentRaw(lua_State *L);
+    bool TagFont(const std::string &tag, TagAttrs &m);
+    bool TagFontDefault(const std::string &tag, TagAttrs &m);
+    bool TagFontInit(const std::string &tag, TagAttrs &m);
+    bool TagFontClose(const std::string &tag, TagAttrs &m);
+    bool TagGlyph(const std::string &tag, TagAttrs &m);
+    bool TagChgMsg(const std::string &tag, TagAttrs &m);
+    bool TagScetween(const std::string &tag, TagAttrs &m);
+    bool TagChgMsgEnd(const std::string &tag, TagAttrs &m);
+    bool TagRp(const std::string &tag, TagAttrs &m);
+    bool TagRuby(const std::string &tag, TagAttrs &m);
+    bool TagRubyEnd(const std::string &tag, TagAttrs &m);
+    bool TagPrint(const std::string &tag, TagAttrs &m);
+    bool TagRt(const std::string &tag, TagAttrs &m);
+    bool TagLink(const std::string &tag, TagAttrs &m);
+    bool TagLinkEnd(const std::string &tag, TagAttrs &m);
+    bool TagLinkDisable(const std::string &tag, TagAttrs &m);
+    bool TagLinkEnable(const std::string &tag, TagAttrs &m);
+    bool TagDialog(const std::string &tag, TagAttrs &m);
     static int l_var(lua_State *L);
     static int l_isFileExists(lua_State *L);
     static int l_loadPngComments(lua_State *L);   // KrKr2-Next addition
