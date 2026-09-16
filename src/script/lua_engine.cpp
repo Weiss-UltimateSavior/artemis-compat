@@ -514,9 +514,9 @@ LuaEngine *LuaEngine::Self(lua_State *L) {
 LuaEngine::~LuaEngine() {
     videos_.clear(); // players release their output before Audio is destroyed
     emotes_.clear();
-    // Audio / AudioChannels are non-owning (EngineContext owns them).
+    delete sounds_;
     sounds_ = nullptr;
-    audio_ = nullptr;
+    if (audio_) { delete audio_; audio_ = nullptr; }
     if (L_) lua_close(L_);
 }
 void LuaEngine::PauseAudio() { if (audio_) audio_->PauseAll(); }
@@ -602,13 +602,13 @@ void ApplyLuaStdlibBlockList(lua_State *L) {
 
 bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
                      const std::string &osName, int screenWidth, int screenHeight,
-                     Compositor *compositor, Audio *audio, AudioChannels *sounds) {
+                     Compositor *compositor) {
     packs_ = packs;
     compositor_ = compositor;
     if(compositor_)compositor_->SetSaveDirectory(save_dir_);
-    // Non-owning: EngineContext constructs and initializes Audio/AudioChannels.
-    audio_ = audio;
-    sounds_ = sounds;
+    audio_ = new Audio();
+    audio_->Init(packs);
+    sounds_ = new AudioChannels(*audio_);
     // Optional project tag.ini: positional parameter names for line tags.
     {
         std::vector<uint8_t> tag_ini;
@@ -1801,7 +1801,7 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
     advance(LoadPhase::RestoreData);
     tag_queue_.clear();SuspendWait();SetAutoMode(false);
     save_image_={};
-    videos_.clear();emotes_.clear();if(audio_)audio_->StopAll();if(sounds_)sounds_->Reset();
+    videos_.clear();emotes_.clear();audio_->StopAll();delete sounds_;sounds_=new AudioChannels(*audio_);
     onsoundfinish_.clear();pending_click_=false;drag_id_.clear();lyevents_.clear();
     if(script_runner_)script_runner_->DiscardFlow();
     advance(LoadPhase::SnapshotScene);
