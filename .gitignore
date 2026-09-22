@@ -26,3 +26,6 @@ savedata/
 
 # os
 .DS_Store
+# Synthetic regression tones, described in tests/data/README.md.
+!tests/data/tone_a.ogg
+!tests/data/tone_b.ogg
