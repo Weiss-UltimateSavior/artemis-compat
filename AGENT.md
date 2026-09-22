@@ -286,6 +286,10 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
 - 同一份内核同时服务官方 Android 壳和外部嵌入宿主。原 `libartemis.so`、
   六个 JNI 方法的完整签名、`JNI_OnLoad`、`ANativeActivity_onCreate` 以及已有
   额外宿主入口保持；不能因下游改用静态库而删除原产品。
+- Android 的实际消费者还包括 Tyranor-Next 的 Kotlin Activity 与插件加载器。
+  核对其 Java 方法描述符、NativeActivity 转发和音频桥所查找的符号，不能只看
+  旧 jar 的接口名称。上游仍产出 `libartemis.so`；宿主将其打包为
+  `libartemis-clean.so`，不把宿主插件命名写死到引擎构建。
 - `AGENTS.md` 是规范入口，本文件是完整规则。修改平台/宿主边界时同步更新。
 - 上游负责引擎语义与可复用平台后端；外部宿主负责窗口、Flutter 纹理、授权和 UI。
   不引入对 NextScene、Flutter 或某个产品的依赖，不在外部重建第二套引擎对象图。
@@ -297,7 +301,8 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
   异步 UI 和场景恢复分别验证，不在构建重构里改变官方 Android 宿主策略。
 - 验证至少包括：宿主回归、真实 GL、嵌入消费者最终链接、Android 官方 `.so`
   构建及必要动态导出；涉及 OHOS 后端时增加 SDK20 编译及可用真机测试。
-  `nm` 的符号检查不等于 jar 行为兼容，原始 jar/Android 设备验证单独记录。
+  `nm` 的符号检查不等于 JNI 行为兼容，Tyranor-Next 和原始壳的 Android
+  设备验证单独记录；已有兼容缺口见 `docs/embedding.md`。
 - 缺 SDK/设备时交付可复现命令和明确未验证项，不得把桩测试或另一平台成功当作通过。
 - 通用修复在上游独立小提交并附合成测试；下游固定已发布 commit，不能依赖
   只存在开发机的 submodule 指针。引擎提交发布后再更新下游指针。

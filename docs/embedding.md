@@ -23,6 +23,43 @@ Lua and the core are position independent; platform libraries propagate to the
 final consumer. `tests/embedded_consumer` demonstrates a shared-library consumer
 and rejects accidentally enabled upstream hosts.
 
+## Android host contract
+
+The Android consumer includes [Tyranor-Next at `2773d8d`](https://github.com/Weiss-UltimateSavior/Tyranor-Next/tree/2773d8de72a9196b4360adf2bde0aa7b512ed345),
+whose `com.ies_net.artemis.ArtemisActivity` is Kotlin source. Its
+`ArtemisActivityClean` selects the clean-room engine in a separate process:
+
+- The plugin packager places the built `libartemis.so` at
+  `<filesDir>/engine_plugins/artemis/current/arm64-v8a/libartemis-clean.so`.
+  Keep the upstream output name; the plugin filename belongs to the consumer.
+- `artemis_loader` calls `dlopen` with `RTLD_NOW | RTLD_GLOBAL` and forwards
+  `ANativeActivity_onCreate`. The Activity then calls `System.load` on the same
+  path to make its JNI methods available to ART.
+- The launcher's `getExternalFilesDir` supplies the game path. Validate startup,
+  native key input, video completion, dialogs, pause/resume and exit through this
+  actual host, in addition to checking the original shell contract.
+
+This build integration leaves `src/jni` unchanged. Source and symbol inspection
+found existing gaps that require a separate Android compatibility change:
+
+- Tyranor declares `OnReadyPlayAssetDelivery(int, int, int)`, but the engine's
+  short-name export accepts `jstring`. The existing `__III` export does not fix
+  this: [JNI resolution tries the short name first](https://docs.oracle.com/en/java/javase/21/docs/specs/jni/design.html#resolving-native-method-names).
+  Invoking that callback can therefore bind an incompatible native signature.
+- `EmulateKeyEvent` and `OnFinishVideo` only log. `ExecuteTag` addresses the
+  separate DebugBridge context, not the active NativeActivity context.
+- Tyranor's bundled audio bridge looks up
+  `_ZN7artemis12CSoundDevice16PauseAllInstanceEv` and
+  `_ZN7artemis12CSoundDevice17ResumeAllInstanceEv`. The engine currently exports
+  the unmangled `PauseAllInstance` / `ResumeAllInstance` names, so those bridge
+  lookups cannot resolve them.
+
+The Android library compiles and retains its entry points; Tyranor-Next runtime
+compatibility is not established by those checks. No Android device run was
+performed for this build integration.
+
+## Backend selection
+
 `ARTC_GRAPHICS_BACKEND` accepts AUTO, HEADLESS, GLES or DESKTOP_GL.
 `ARTC_AUDIO_BACKEND` accepts AUTO, OPENSL, OHAUDIO or NULL.
 
@@ -100,5 +137,6 @@ validate with a signed application instead.
 
 The export checker protects the six original JNI names plus bootstrap and existing
 extra entry points. It does not prove Java descriptors or runtime behavior. Test
-the original jar on Android separately. Native iOS SDK builds, Apple audio, and
-platform texture/lifecycle integration are separate requirements.
+Tyranor-Next and the original shell on Android separately, including the gaps
+listed above. Native iOS SDK builds, Apple audio, and platform texture/lifecycle
+integration are separate requirements.
