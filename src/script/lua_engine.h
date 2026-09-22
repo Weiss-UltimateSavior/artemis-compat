@@ -1,6 +1,6 @@
 // lua_engine.h — Lua 5.1 embedding with the `e` bridge table.
 //
-// Behavior spec (from the decrypted iMel init.lua and engine analysis):
+// Lua host API exposed to game scripts:
 //   * `e:tag{ name, key=value, ... }` dispatches an engine tag; the `var` tag
 //     stores system values (`system="os"|"screen_width"|"screen_height"`)
 //   * `e:var(name)` reads a stored variable
