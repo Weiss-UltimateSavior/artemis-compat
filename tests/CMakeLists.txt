@@ -21,6 +21,10 @@ foreach(backend gles desktop)
     add_test(NAME shader_backend_${backend} COMMAND shader_backend_${backend})
 endforeach()
 
+add_executable(engine_context_regressions engine_context_regressions.cpp)
+target_link_libraries(engine_context_regressions PRIVATE artemis::core)
+add_test(NAME engine_context_regressions COMMAND engine_context_regressions)
+
 add_executable(runtime_regressions runtime_regressions.cpp)
 target_link_libraries(runtime_regressions PRIVATE artemis_core)
 add_test(NAME runtime_regressions COMMAND runtime_regressions)
