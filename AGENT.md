@@ -202,7 +202,8 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
 - 三段式生命周期：
   1. `Open(data_dir, os_id, key)`（无 GL）：解析包链（目录或 .pfs 直路径，
      root.pfs 优先）、解析 system.ini、建 Audio/AudioChannels、定 stage 尺寸
-     （ANDROID 节优先，WINDOWS 兜底）。幂等，进程内只开一次。
+     （ANDROID 节优先，WINDOWS 兜底）。幂等，直到 Shutdown 后才可换包；
+     嵌入宿主可传第四个参数指定独立存档目录，省略时仍写在包旁。
   2. `Start(with_compositor=true)`（GL 上下文当前）：建 Compositor 并 `Init`，
      建 LuaEngine 并 `Init`。GL 丢失/[reset] 后再次调用即可重建会话（内部先
      `ReleaseGl`）。DebugBridge 这类无 GL 路径用 `Start(false)`。
