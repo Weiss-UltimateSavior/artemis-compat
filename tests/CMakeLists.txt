@@ -25,6 +25,10 @@ target_compile_definitions(audio_stream_regressions PRIVATE
 target_link_libraries(audio_stream_regressions PRIVATE artemis_core)
 add_test(NAME audio_stream_regressions COMMAND audio_stream_regressions)
 
+add_executable(audio_ownership_regressions audio_ownership_regressions.cpp)
+target_link_libraries(audio_ownership_regressions PRIVATE artemis_core)
+add_test(NAME audio_ownership_regressions COMMAND audio_ownership_regressions)
+
 add_executable(asb_runner_regressions asb_runner_regressions.cpp)
 target_link_libraries(asb_runner_regressions PRIVATE artemis_core)
 add_test(NAME asb_runner_regressions COMMAND asb_runner_regressions)
