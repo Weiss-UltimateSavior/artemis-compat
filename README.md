@@ -1,10 +1,12 @@
-# artemis-compat — clean-room Artemis 兼容引擎
+# artemis-compat — Artemis 兼容引擎
 
-自研、可自行编译的 Artemis Engine 兼容运行时：产出安卓 `libartemis.so`（导出与官方一致的 JNI 六接口，
-可被官方 `ArtemisActivity.jar` 壳直接加载）。
+自研、可自行编译的 Artemis Engine 兼容运行时：产出安卓 `libartemis.so`，
+保留原有 JNI 导出和 NativeActivity 入口。Tyranor-Next 及原始 Android 壳的
+接口要求、已知缺口和验证状态见[嵌入指南](docs/embedding.md#android-host-contract)。
 
-> **clean-room**：实现规格来自**行为级逆向**（格式/标签/接口/时序，"引擎怎么响应输入"而非"引擎怎么写的"）
-> 与官方公开规格，不转写任何反编译伪代码；不含 emote（M2 闭源中间件）等闭源组件；不分发任何游戏资产。
+> **开发约束**：按文件格式、接口、标签语义和输入/输出行为定义兼容范围；
+> 不复制或改写未经许可的第三方实现。不含 emote（M2 闭源中间件）等闭源组件，
+> 不分发任何游戏资产；第三方代码按其许可证保留来源和署名。
 
 目前实测游戏：**《闪亮女友》**  **《常轨脱离Creative》**  **《常轨脱离Creative 凸》**  **《常轨脱离ReReCall》**   **《甜蜜女友3》**
 

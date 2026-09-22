@@ -1,15 +1,18 @@
-// jni_bridge.cpp — the six JNI exports matching the official ArtemisActivity jar.
+// jni_bridge.cpp — Android host JNI entry points.
 //
 // Naming note: the package `com.ies_net.artemis` contains an underscore, which
 // JNI escapes as `_1` in symbol names (Java_com_ies_1net_artemis_...).
 //
-// Interface contract (behavior-level spec from engine analysis):
+// Native signatures and host operations (some callbacks remain logging stubs):
 //   ExecuteTag(String)                      Java -> engine: run one script tag
 //   EmulateKeyEvent(int key, int status)    Java -> engine: inject key event
 //   OnFinishVideo()                         Java -> engine: video finished
-//   OnFinishPurchase(int, String×5, int)    Java -> engine: purchase finished
+//   OnFinishPurchase(int, String×4, int, String)  purchase finished
 //   OnReadyPlayAssetDelivery(String)        Java -> engine: PAD assets ready
+//   OnReadyPlayAssetDelivery(int, int, int)  exported with the __III suffix
 //   moe.artemis.gui.Dialog.OnClose(int, String, long)  dialog closed
+// The PAD short/long signatures need reconciliation with the host declarations;
+// retained export names alone do not establish compatibility. See docs/embedding.md.
 //
 // M0: symbols exist, log activity, and delegate to the engine core where the
 // subsystem exists (tag text is forwarded to the Lua `e:tag` path).

@@ -47,7 +47,7 @@ struct Cursor {
 };
 } // namespace
 
-// Format (behavior-level spec, verified against a full real script):
+// ASB record layout accepted by this parser:
 //   "ASB\0" + u8 pad + u32 line_count
 //   line_count × line, each: u32 type (0 = tag, 1 = label) + body
 //     label body: u32 len, name, NUL
