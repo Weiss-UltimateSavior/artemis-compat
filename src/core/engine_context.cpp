@@ -39,13 +39,27 @@ EngineContext::~EngineContext() { Shutdown(); }
 
 // A directory holding root.pfs (and its patch chain), or a direct .pfs path.
 // root.pfs sorts first, matching every host's historical resolution.
-std::string EngineContext::ResolvePack(const std::string &data_dir) const {
-    if (!fs::is_directory(data_dir)) return data_dir;
+std::string EngineContext::ResolvePack(const std::string &data_dir,
+                                       const PackManager::FileProvider *provider) const {
     std::vector<std::string> packs;
+    // A direct `.pfs` path is already the chain base.  This check must happen
+    // before provider directory enumeration because a DocumentsProvider
+    // cannot list a file URI as a directory.
+    if (EndsWith(ToLower(data_dir), ".pfs")) {
+        return data_dir;
+    } else if (provider && provider->list) {
+        std::vector<std::string> names;
+        if (!provider->list(data_dir, names)) return {};
+        for (const auto &name : names) {
+            if (EndsWith(ToLower(name), ".pfs")) packs.push_back(data_dir + "/" + name);
+        }
+    } else {
+    if (!fs::is_directory(data_dir)) return data_dir;
     for (const auto &e : fs::directory_iterator(data_dir)) {
         if (e.is_regular_file() &&
             EndsWith(ToLower(e.path().filename().string()), ".pfs"))
             packs.push_back(e.path().string());
+    }
     }
     if (packs.empty()) return {};
     std::sort(packs.begin(), packs.end(), [](const std::string &a, const std::string &b) {
@@ -73,16 +87,23 @@ bool EngineContext::Open(const std::string &data_dir, const std::string &os_id,
 bool EngineContext::Open(const std::string &data_dir, const std::string &os_id,
                          const std::vector<uint8_t> &explicit_key,
                          const std::string &save_dir) {
+    return Open(data_dir, os_id, explicit_key, save_dir, {});
+}
+
+bool EngineContext::Open(const std::string &data_dir, const std::string &os_id,
+                         const std::vector<uint8_t> &explicit_key,
+                         const std::string &save_dir,
+                         const PackManager::FileProvider &provider) {
     os_id_ = os_id;
     if (packs_) return true;  // keep the current chain until Shutdown()
-    const std::string pack = ResolvePack(data_dir);
+    const std::string pack = ResolvePack(data_dir, provider.list ? &provider : nullptr);
     if (pack.empty()) {
         Log(kLogError, "engine: no .pfs pack at " + data_dir);
         return false;
     }
     save_dir_ = save_dir.empty() ? fs::path(pack).parent_path().string() : save_dir;
     packs_ = std::make_unique<PackManager>();
-    if (!packs_->OpenChain(pack, explicit_key)) {
+    if (!packs_->OpenChain(pack, explicit_key, provider)) {
         Log(kLogError, "engine: cannot open pack chain: " + pack);
         Shutdown();
         return false;

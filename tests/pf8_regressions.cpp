@@ -17,6 +17,10 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -205,6 +209,27 @@ void TestPackChainGap() {
     std::filesystem::remove(vol2);
 }
 
+void TestDescriptorProvider() {
+#if defined(_WIN32)
+    // The descriptor provider is used by SAF hosts; Windows keeps the path
+    // based reader and is covered by the ordinary chain test above.
+    return;
+#else
+    const std::string path = WriteTemp(BuildPack('8', {{"provider.txt", {'P'}}}),
+                                       "artc_provider_root.pfs");
+    artc::PackManager::FileProvider provider;
+    provider.openRead = [](const std::string &name) {
+        return ::open(name.c_str(), O_RDONLY);
+    };
+    artc::PackManager packs;
+    Check(packs.OpenChain(path, {}, provider), "open pack through descriptor provider");
+    std::vector<uint8_t> out;
+    Check(packs.Read("provider.txt", out) && out == std::vector<uint8_t>({'P'}),
+          "read packed entry through retained descriptor");
+    std::filesystem::remove(path);
+#endif
+}
+
 } // namespace
 
 int main() {
@@ -213,6 +238,7 @@ int main() {
     TestShiftJisLookup();
     TestDecodeToUtf8();
     TestPackChainGap();
+    TestDescriptorProvider();
     if (g_failures == 0) std::cout << "pf8_regressions: ok\n";
     return g_failures == 0 ? 0 : 1;
 }

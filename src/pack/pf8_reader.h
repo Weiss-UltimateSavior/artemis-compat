@@ -49,6 +49,9 @@ public:
     // `key` empty (default) → derive automatically via SHA1 over the index
     // region. An explicit key overrides derivation.
     bool Open(const std::string &path, const std::vector<uint8_t> &key = {});
+    // Open an already-authorized descriptor. The reader owns and closes fd.
+    bool OpenFd(const std::string &path, int fd,
+                const std::vector<uint8_t> &key = {});
 
     const std::vector<Pf8Entry> &Entries() const { return entries_; }
     uint32_t FileCount() const { return static_cast<uint32_t>(entries_.size()); }
