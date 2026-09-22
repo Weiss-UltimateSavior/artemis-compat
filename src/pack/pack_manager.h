@@ -9,6 +9,7 @@
 #include "pack/pf8_reader.h"
 
 #include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -16,9 +17,19 @@ namespace artc {
 
 class PackManager {
 public:
+    struct FileProvider {
+        // Return an owned, seekable read-only descriptor, or -1.
+        std::function<int(const std::string &)> openRead;
+        // Return direct child names for a logical directory.
+        std::function<bool(const std::string &, std::vector<std::string> &)> list;
+        // Read a loose sidecar file. Packed entries do not use this callback.
+        std::function<bool(const std::string &, std::vector<uint8_t> &)> read;
+    };
     // `base_path` is the main pack; patch packs `base_path.000` and upward are
     // opened while they exist. All packs share `key`.
     bool OpenChain(const std::string &base_path, const std::vector<uint8_t> &key);
+    bool OpenChain(const std::string &base_path, const std::vector<uint8_t> &key,
+                   const FileProvider &provider);
 
     // Resolve a name across the chain (patch packs win). Returns the content.
     bool Read(const std::string &name, std::vector<uint8_t> &out) const;
@@ -34,6 +45,7 @@ public:
 private:
     std::vector<std::unique_ptr<Pf8Reader>> packs_;
     std::string base_path_;
+    FileProvider provider_;
 };
 
 } // namespace artc

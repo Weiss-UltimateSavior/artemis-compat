@@ -17,6 +17,7 @@
 #include "config/ini.h"
 
 #include <memory>
+#include "pack/pack_manager.h"
 #include <string>
 #include <vector>
 
@@ -47,6 +48,9 @@ public:
     // of the pack location. Empty retains the official host's sidecar layout.
     bool Open(const std::string &data_dir, const std::string &os_id,
               const std::vector<uint8_t> &explicit_key, const std::string &save_dir);
+    bool Open(const std::string &data_dir, const std::string &os_id,
+              const std::vector<uint8_t> &explicit_key, const std::string &save_dir,
+              const PackManager::FileProvider &provider);
 
     // Phase 2 (GL context must be current when `with_compositor`): compositor
     // Init + Lua session. Safe to call again after ResetSession() (compositor
@@ -98,7 +102,8 @@ public:
     static void SetCurrent(EngineContext *ctx);
 
 private:
-    std::string ResolvePack(const std::string &data_dir) const;
+    std::string ResolvePack(const std::string &data_dir,
+                            const PackManager::FileProvider *provider = nullptr) const;
     int StageInt(const char *key, int fallback) const;
 
     std::unique_ptr<PackManager> packs_;

@@ -56,14 +56,28 @@ bool Pf8Reader::ReadAt(uint64_t offset, void *buf, size_t len) const {
 }
 
 bool Pf8Reader::Open(const std::string &path, const std::vector<uint8_t> &key) {
+#if defined(_WIN32)
+    // The Windows implementation reads through the path on each operation.
+    return OpenFd(path, -1, key);
+#else
+    int fd = -1;
+    fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    return OpenFd(path, fd, key);
+#endif
+}
+
+bool Pf8Reader::OpenFd(const std::string &path, int fd,
+                       const std::vector<uint8_t> &key) {
     Close();
     path_ = path;
     key_ = key;
     encrypted_ = true;
 
 #if !defined(_WIN32)
-    fd_ = ::open(path.c_str(), O_RDONLY);
-    if (fd_ < 0) return false;
+    fd_ = fd;
+#else
+    (void)fd;
 #endif
 
     uint8_t header[11];
