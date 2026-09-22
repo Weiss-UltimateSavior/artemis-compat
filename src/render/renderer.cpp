@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(ARTC_HAS_GLES)
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <android/native_window.h>
@@ -12,7 +12,7 @@
 
 namespace artc {
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(ARTC_HAS_GLES)
 
 bool Renderer::Init(void *native_window) {
     auto *window = static_cast<ANativeWindow *>(native_window);

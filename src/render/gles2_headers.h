@@ -7,7 +7,7 @@
 // state) is present in OpenGL 2.1. Include this header instead of <GLES2/gl2.h>.
 #pragma once
 
-#if defined(__APPLE__)
+#if defined(ARTC_USE_DESKTOP_GL)
 // Prototypes for the extension entry points (OpenGL.framework exports them).
 #define GL_GLEXT_PROTOTYPES 1
 #include <OpenGL/gl.h>
