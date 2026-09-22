@@ -67,18 +67,24 @@ int EngineContext::StageInt(const char *key, int fallback) const {
 
 bool EngineContext::Open(const std::string &data_dir, const std::string &os_id,
                          const std::vector<uint8_t> &explicit_key) {
+    return Open(data_dir, os_id, explicit_key, {});
+}
+
+bool EngineContext::Open(const std::string &data_dir, const std::string &os_id,
+                         const std::vector<uint8_t> &explicit_key,
+                         const std::string &save_dir) {
     os_id_ = os_id;
-    if (packs_) return true;  // pack chain is per-process
+    if (packs_) return true;  // keep the current chain until Shutdown()
     const std::string pack = ResolvePack(data_dir);
     if (pack.empty()) {
         Log(kLogError, "engine: no .pfs pack at " + data_dir);
         return false;
     }
-    save_dir_ = fs::path(pack).parent_path().string();
+    save_dir_ = save_dir.empty() ? fs::path(pack).parent_path().string() : save_dir;
     packs_ = std::make_unique<PackManager>();
     if (!packs_->OpenChain(pack, explicit_key)) {
         Log(kLogError, "engine: cannot open pack chain: " + pack);
-        packs_.reset();
+        Shutdown();
         return false;
     }
     std::vector<uint8_t> ini_bytes;
@@ -198,6 +204,11 @@ void EngineContext::Shutdown() {
         audio_.reset();
     }
     packs_.reset();
+    ini_ = Ini{};
+    save_dir_.clear();
+    os_id_ = "windows";
+    stage_w_ = 1280;
+    stage_h_ = 720;
 }
 
 // Registry only (not ownership): hosts that boot an engine publish it here so

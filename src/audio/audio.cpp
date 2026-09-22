@@ -21,7 +21,7 @@
 #include "log/logger.h"
 #include "pack/pack_manager.h"
 
-#if defined(__ANDROID__)
+#if defined(ARTC_AUDIO_OPENSL)
 #include <SLES/OpenSLES.h>
 #include <SLES/OpenSLES_Android.h>
 #endif
@@ -31,7 +31,7 @@ namespace artc {
 // --------------------------------------------------------------------------
 // Host stub ----------------------------------------------------------------
 // --------------------------------------------------------------------------
-#if !defined(__ANDROID__)
+#if !defined(ARTC_AUDIO_OPENSL)
 
 struct Audio::Impl { PackManager *packs = nullptr; };
 

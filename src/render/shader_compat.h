@@ -8,7 +8,7 @@
 #pragma once
 #include <string>
 
-#if defined(__APPLE__)
+#if defined(ARTC_USE_DESKTOP_GL)
 #include <map>
 #include <regex>
 

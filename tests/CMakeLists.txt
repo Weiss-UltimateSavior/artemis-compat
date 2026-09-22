@@ -11,6 +11,20 @@ enable_testing()
 set(ARTC_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data" CACHE PATH
     "Runtime location of synthetic test fixtures")
 
+foreach(backend gles desktop)
+    add_executable(shader_backend_${backend} shader_backend_regressions.cpp)
+    target_compile_features(shader_backend_${backend} PRIVATE cxx_std_17)
+    target_include_directories(shader_backend_${backend} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+    if(backend STREQUAL "desktop")
+        target_compile_definitions(shader_backend_${backend} PRIVATE ARTC_USE_DESKTOP_GL=1)
+    endif()
+    add_test(NAME shader_backend_${backend} COMMAND shader_backend_${backend})
+endforeach()
+
+add_executable(engine_context_regressions engine_context_regressions.cpp)
+target_link_libraries(engine_context_regressions PRIVATE artemis::core)
+add_test(NAME engine_context_regressions COMMAND engine_context_regressions)
+
 add_executable(runtime_regressions runtime_regressions.cpp)
 target_link_libraries(runtime_regressions PRIVATE artemis_core)
 add_test(NAME runtime_regressions COMMAND runtime_regressions)
@@ -24,6 +38,10 @@ target_compile_definitions(audio_stream_regressions PRIVATE
     ARTC_TEST_DATA="${ARTC_TEST_DATA_DIR}")
 target_link_libraries(audio_stream_regressions PRIVATE artemis_core)
 add_test(NAME audio_stream_regressions COMMAND audio_stream_regressions)
+
+add_executable(audio_ownership_regressions audio_ownership_regressions.cpp)
+target_link_libraries(audio_ownership_regressions PRIVATE artemis_core)
+add_test(NAME audio_ownership_regressions COMMAND audio_ownership_regressions)
 
 add_executable(asb_runner_regressions asb_runner_regressions.cpp)
 target_link_libraries(asb_runner_regressions PRIVATE artemis_core)
@@ -114,14 +132,6 @@ endif()
 # system EGL/GLES). Off by default.
 option(ARTC_TEST_GLES "Run compositor regressions using desktop ANGLE" OFF)
 if(ARTC_TEST_GLES)
-    if(NOT OHOS)
-        find_package(unofficial-angle CONFIG REQUIRED)
-        find_path(ARTC_GLES_INCLUDE_DIR GLES2/gl2.h REQUIRED)
-        target_include_directories(artemis_core PUBLIC ${ARTC_GLES_INCLUDE_DIR})
-        target_compile_definitions(artemis_core PUBLIC ARTC_HAS_GLES=1)
-        target_link_libraries(artemis_core PUBLIC
-            unofficial::angle::libEGL unofficial::angle::libGLESv2)
-    endif()
     add_executable(compositor_regressions compositor_regressions.cpp)
     if(ARTC_TEST_MOVIE)
         target_sources(compositor_regressions PRIVATE "${ARTC_TEST_MOVIE}")

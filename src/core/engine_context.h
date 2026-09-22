@@ -39,9 +39,14 @@ public:
     // Phase 1 (no GL): resolve the pack chain (a directory holding root.pfs /
     // *.pfs, or a direct .pfs path), parse system.ini, create + initialize
     // audio, and read the stage size. Idempotent: a second call keeps the
-    // already-open chain (the data_dir is fixed for a process).
+    // already-open chain until Shutdown().
     bool Open(const std::string &data_dir, const std::string &os_id,
               const std::vector<uint8_t> &explicit_key = {});
+
+    // Embedded hosts may use a writable application directory independently
+    // of the pack location. Empty retains the official host's sidecar layout.
+    bool Open(const std::string &data_dir, const std::string &os_id,
+              const std::vector<uint8_t> &explicit_key, const std::string &save_dir);
 
     // Phase 2 (GL context must be current when `with_compositor`): compositor
     // Init + Lua session. Safe to call again after ResetSession() (compositor
@@ -66,7 +71,8 @@ public:
     // by the GL-lost and [reset] re-boot paths.
     void ResetSession();
 
-    // Full teardown (compositor GL resources included).
+    // Full teardown (GL context must be current if a compositor was started).
+    // Restores defaults so the same object can subsequently open another game.
     void Shutdown();
 
     bool Opened() const { return packs_ != nullptr; }
