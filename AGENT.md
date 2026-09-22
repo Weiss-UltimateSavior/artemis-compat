@@ -28,7 +28,7 @@ jni / host（宿主壳）
 1. `src/render/` 不得 `#include "script/…"`（模块级循环，已清零，不得回归）。
 2. `src/script/*.h` 不得 `#include "render/…"`（头文件层不反向依赖渲染；
    `lua_engine.cpp` 等实现文件可单向 include render——那是合法分层方向）。
-3. `core/` 只被 `host/`、`jni/` 引用；任何引擎模块（script/render/audio/pack）
+3. `core/` 只被宿主（`host/`、`jni/`、`cli/` 或外部嵌入适配器）引用；任何引擎模块（script/render/audio/pack）
    不得 `#include "core/…"`。
 4. 跨模块共享的类型一律下沉到最低公共层：
    - `util/text.h`：`TextRuby` + UTF8/Base64/URL/SplitEscaped 工具；
@@ -279,3 +279,24 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
   替换的是这个空闲等待，不是 swap 路径。
 - **安装**：`cmake --install` 必须保持可用（core/so/CLI/mac + `src/**/*.h`），
   下游（壳工程/打包脚本）不再手拷 `build-android/libartemis.so`。
+
+## 16. 嵌入宿主与官方 Android 产物
+
+- 同一份内核同时服务官方 Android 壳和外部嵌入宿主。原 `libartemis.so`、
+  六个 JNI 方法的完整签名、`JNI_OnLoad`、`ANativeActivity_onCreate` 以及已有
+  额外宿主入口保持；不能因下游改用静态库而删除原产品。
+- `AGENTS.md` 是规范入口，本文件是完整规则。修改平台/宿主边界时同步更新。
+- 上游负责引擎语义与可复用平台后端；外部宿主负责窗口、Flutter 纹理、授权和 UI。
+  不引入对 NextScene、Flutter 或某个产品的依赖，不在外部重建第二套引擎对象图。
+- CMake 子工程默认只构建库，独立构建保持原默认宿主。图形提供者与音频后端
+  显式选择，库依赖必须传递到最终链接；生产缺依赖时报错，不能暗中降为静音/无 GL。
+- 桌面 GL 适配只对该渲染后端启用，不能将 `__APPLE__` 等同于 macOS OpenGL。
+  iOS/ANGLE 使用 GLES 头和 GLSL ES，不能照搬 Cocoa macOS 宿主。
+- 新宿主配置采用可选参数，现有调用保持默认行为。独立存档目录、外部帧驱动、
+  异步 UI 和场景恢复分别验证，不在构建重构里改变官方 Android 宿主策略。
+- 验证至少包括：宿主回归、真实 GL、嵌入消费者最终链接、Android 官方 `.so`
+  构建及必要动态导出；涉及 OHOS 后端时增加 SDK20 编译及可用真机测试。
+  `nm` 的符号检查不等于 jar 行为兼容，原始 jar/Android 设备验证单独记录。
+- 缺 SDK/设备时交付可复现命令和明确未验证项，不得把桩测试或另一平台成功当作通过。
+- 通用修复在上游独立小提交并附合成测试；下游固定已发布 commit，不能依赖
+  只存在开发机的 submodule 指针。引擎提交发布后再更新下游指针。
