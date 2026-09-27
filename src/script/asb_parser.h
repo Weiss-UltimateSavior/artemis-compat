@@ -11,6 +11,7 @@
 #pragma once
 #include "script/lua_engine.h"
 #include <cstdint>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -81,6 +82,13 @@ public:
 private:
     bool Load(const std::vector<uint8_t> &image, const std::string &label);
     bool FindLabel(const std::string &label, size_t *pc);
+    // Index every label of the currently loaded script to its file. The ADV
+    // framework loads macro.iet/macro2.iet/… once at boot; afterwards a jump
+    // that omits `file` (e.g. `[jump label=game_start]`) targets such a label
+    // in a *different* script than the one currently on the cursor. The
+    // official engine resolves bare labels through this cross-file index.
+    void IndexLoadedLabels();
+    bool ResolveGlobalLabel(const std::string &label, std::string *file);
 
     AsbScript script_;
     size_t pc_ = 0;
@@ -103,6 +111,9 @@ private:
         LuaEngine::WaitState wait{};
     };
     std::vector<Frame> callstack_;
+    // Bare label -> script file, indexed from every loaded script. Later loads
+    // override earlier ones (macro2.iet redefines game_start, …).
+    std::map<std::string, std::string> global_labels_;
     uint64_t next_event_ = 0;
     uint64_t event_entry_ = 0;
     uint64_t event_revision_ = 0;

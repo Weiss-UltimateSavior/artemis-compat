@@ -160,6 +160,16 @@ int main() {
              "*other\n[stepP4]\n[return]\n"},
             // event frame: BeginEvent/EndEvent around an interrupt
             {"emain.iet", "*start\n[stepE1]\n[stepE2]\n[return]\n"},
+            // omitted-file jump targets a label in the current file (official
+            // same-file jump semantics); stepDead must be skipped
+            {"same.iet",
+             "*start\n[stepS1]\n[jump label=\"target\"]\n[stepDead]\n"
+             "*target\n[stepS2]\n[return]\n"},
+            // a boot macro script that defines a global entry label
+            {"macro_x.iet", "*game_start\n[stepG1]\n[stepG2]\n[return]\n"},
+            // a different boot script whose cursor has no game_start label;
+            // the bare jump must resolve to macro_x.iet (cross-file index)
+            {"boot_x.iet", "*start\n[stepB1]\n[jump label=\"game_start\"]\n[stepDead]\n"},
         });
         std::ofstream out(pack_path, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char *>(bytes.data()), (std::streamsize)bytes.size());
@@ -273,6 +283,47 @@ int main() {
         Run(runner, lua);
         artc::SetLogSink(nullptr);
         Check(trace.count("asb: load emain.iet") >= 2, "script re-parsed on re-entry");
+    }
+
+    // ---- 6) omitted-file jump: in-file then cross-file label resolution ----
+    {
+        Trace trace;
+        artc::SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (bare jump)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+
+        // (a) same-file omitted-file jump lands on the in-file label.
+        Check(runner.Jump("same.iet", "start"), "load same.iet");
+        runner.ExecuteLine(lua);  // *start
+        runner.ExecuteLine(lua);  // [stepS1]
+        Check(runner.Jump("", "target"), "in-file bare jump accepted");
+        Run(runner, lua);
+
+        // (b) cross-file bare label: preload the macro defining game_start,
+        // then put the cursor in a different script that lacks it.
+        Check(runner.Jump("macro_x.iet", "start"), "preload macro (labels indexed)");
+        Check(runner.Jump("boot_x.iet", "start"), "load boot_x.iet");
+        runner.ExecuteLine(lua);  // *start
+        runner.ExecuteLine(lua);  // [stepB1]
+        Check(runner.Jump("", "game_start"), "cross-file bare jump accepted");
+        Check(!runner.Halted(), "runner live after cross-file bare jump");
+        Run(runner, lua);
+        artc::SetLogSink(nullptr);
+
+        const auto steps = OnlyStepsWithPrefix(trace.steps(), "step");
+        Check(steps == std::vector<std::string>{"stepS1", "stepS2", "stepB1",
+                                                "stepG1", "stepG2"},
+              "bare jumps resolve in-file then cross-file");
+        Check(trace.has("bare label game_start -> macro_x.iet"),
+              "cross-file resolution logged");
+
+        // (c) a context-less placeholder (nothing loaded) stays safe.
+        artc::AsbRunner empty;
+        empty.SetPackSource(&packs);
+        Check(empty.Jump("", "x") && empty.Call("", "x"), "context-less empty target safe");
+        Check(!trace.has("script not found in packs: "), "no missing-script read");
     }
 
     fs::remove_all(dir);

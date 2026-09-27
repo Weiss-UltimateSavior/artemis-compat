@@ -116,6 +116,27 @@ bool AsbRunner::Jump(const std::string &file, const std::string &label) {
         Log(kLogError, "asb: no pack source for jump");
         return false;
     }
+    // A jump whose file is omitted resolves a bare label: prefer the current
+    // script (official same-file semantics), then the cross-file index built
+    // from the boot macro scripts. A still-unresolved target with no script
+    // loaded at all is a malformed placeholder: no-op instead of permanently
+    // halting the runner on a black boot screen.
+    if (file.empty()) {
+        if (loaded_) {
+            size_t pc = 0;
+            if (FindLabel(label, &pc)) {
+                JumpTo(label);
+                return true;
+            }
+            std::string global_file;
+            if (ResolveGlobalLabel(label, &global_file)) {
+                Log(kLogInfo, "asb: bare label " + label + " -> " + global_file);
+                return Jump(global_file, label);
+            }
+        }
+        Log(kLogWarn, "asb: ignoring unresolved bare jump (label=" + label + ")");
+        return true;
+    }
     if (std::getenv("ARTC_JUMP_TRACE"))
         Log(kLogInfo, "asb-jump: " + file + ":" + label);
     // The framework re-jumps to the same script every frame (click-wait poll);
@@ -132,10 +153,31 @@ bool AsbRunner::Jump(const std::string &file, const std::string &label) {
     Log(kLogInfo, "asb: load " + file + " label=" + label);
     if (!Load(image, label)) return false;
     current_file_ = file;
+    IndexLoadedLabels();
+    return true;
+}
+
+void AsbRunner::IndexLoadedLabels() {
+    if (current_file_.empty()) return;
+    for (const auto &lp : script_.labels)
+        global_labels_[lp.first] = current_file_;
+}
+
+bool AsbRunner::ResolveGlobalLabel(const std::string &label, std::string *file) {
+    const auto it = global_labels_.find(label);
+    if (it == global_labels_.end()) return false;
+    if (file) *file = it->second;
     return true;
 }
 
 bool AsbRunner::Call(const std::string &file, const std::string &label) {
+    // A context-less empty call with no script loaded is a malformed
+    // placeholder: do not push a bogus return frame. When a script is loaded,
+    // fall through so bare-label resolution (see Jump) applies.
+    if (file.empty() && !loaded_) {
+        Log(kLogWarn, "asb: ignoring unresolved bare call (label=" + label + ")");
+        return true;
+    }
     // Only record a resume point when the caller's cursor is valid; a
     // Lua-originated estag call whose runner sits at a stale halt must not
     // push a return into a dead region.
