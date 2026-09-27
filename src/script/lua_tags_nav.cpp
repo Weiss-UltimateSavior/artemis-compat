@@ -190,6 +190,19 @@ bool LuaEngine::TagSaveSs(const std::string &tag, TagAttrs &m) {
     return true;
 }
 
+// [macroadd file=...] is framework configuration naming a reusable .iet
+// command/message file. The native engine neither renders nor executes it at
+// registration time; treating it as accepted lets system boot complete on
+// hosts that do not provide the framework UI.
+bool LuaEngine::TagMacroAdd(const std::string &tag, TagAttrs &m) {
+    if (!compositor_) return false;
+    if (!m.count("file")) {
+        Log(kLogWarn, "macroadd without file");
+        return false;
+    }
+    return true;
+}
+
 // [wt] waits for running tweens/transitions.
 bool LuaEngine::TagWt(const std::string &tag, TagAttrs &m) {
     if (!compositor_) return false;

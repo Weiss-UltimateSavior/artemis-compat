@@ -151,7 +151,7 @@ LuaEngine::TagTable() {
         {"sysshow", &LuaEngine::TagNoOp},         {"syshide", &LuaEngine::TagNoOp},
         {"loadmask", &LuaEngine::TagNoOp},        {"alldelete", &LuaEngine::TagNoOp},
         {"repeatedly", &LuaEngine::TagNoOp},      {"autoskip_disable", &LuaEngine::TagNoOp},
-        {"macroadd", &LuaEngine::TagNoOp},        {"macrodel", &LuaEngine::TagNoOp},
+        {"macroadd", &LuaEngine::TagMacroAdd},      {"macrodel", &LuaEngine::TagNoOp},
         {"loading", &LuaEngine::TagNoOp},         {"saving", &LuaEngine::TagNoOp},
         // message-layer text pipeline
         {"fontdefault", &LuaEngine::TagFontDefault},

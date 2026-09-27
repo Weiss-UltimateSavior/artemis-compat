@@ -14,6 +14,7 @@
 #include "pack/pack_manager.h"
 #include "pack/sha1.h"
 #include "script/asb_parser.h"
+#include "script/iet_interpreter.h"
 #include "script/lua_engine.h"
 
 #include <cstdint>
@@ -133,6 +134,60 @@ void Run(artc::AsbRunner &runner, artc::LuaEngine &lua, int max_steps = 500) {
 }
 
 } // namespace
+
+static int MacroAddIsAcceptedDuringBoot() {
+    using namespace artc;
+    const fs::path dir = fs::temp_directory_path() /
+                         ("artc_asb_macro_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string pack_path = (dir / "root.pfs").string();
+    {
+        std::vector<uint8_t> bytes = BuildPack({
+            {"system.ini", "[ANDROID]\nWIDTH=1280\nHEIGHT=720\n"},
+            {"system/first.iet",
+             "// Boot registers framework command macros. They do not mutate the\n"
+             "// scene, but must not be treated as fatal unknown tags.\n"
+             "[macroadd file=\"system/macro.iet\"]\n"
+             "[macroadd file=\"system/system.iet\"]\n"
+             "[stop]\n"},
+        });
+        std::ofstream out(pack_path, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char *>(bytes.data()), (std::streamsize)bytes.size());
+    }
+
+    PackManager packs;
+    if (!packs.OpenChain(pack_path, {})) {
+        std::cerr << "FAIL: macro fixture pack open\n";
+        return 1;
+    }
+    Ini ini;
+    std::vector<uint8_t> ini_bytes;
+    if (packs.Read("system.ini", ini_bytes))
+        ini.Parse(std::string(ini_bytes.begin(), ini_bytes.end()));
+
+    Trace trace;
+    SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+    LuaEngine lua;
+    bool ok = lua.Init(&packs, ini, "android", 1280, 720);
+    IetRunner iet(&packs, &lua);
+    ok = ok && iet.Run("system/first.iet");
+    SetLogSink(nullptr);
+    fs::remove_all(dir);
+    if (!ok) {
+        std::cerr << "FAIL: macroadd boot stopped with an error\n";
+        return 1;
+    }
+    for (const std::string &line : trace.lines) {
+        if (line.find("tag[trace]: unknown tag") != std::string::npos ||
+            line.find("tag dispatch failed: macroadd") != std::string::npos) {
+            std::cerr << "FAIL: macroadd rejected: " << line << "\n";
+            return 1;
+        }
+    }
+    std::cout << "macroadd accepted during boot\n";
+    return 0;
+}
 
 int main() {
     const fs::path dir = fs::temp_directory_path() /
@@ -280,6 +335,7 @@ int main() {
         std::cerr << g_failures << " asb runner regression failure(s)\n";
         return 1;
     }
+    if (MacroAddIsAcceptedDuringBoot() != 0) return 1;
     std::cout << "asb runner regressions passed\n";
     return 0;
 }

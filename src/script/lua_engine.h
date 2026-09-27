@@ -253,6 +253,7 @@ private:
     bool TagTakeSs(const std::string &tag, TagAttrs &m);
     bool TagSaveSs(const std::string &tag, TagAttrs &m);
     bool TagWt(const std::string &tag, TagAttrs &m);
+    bool TagMacroAdd(const std::string &tag, TagAttrs &m);
     bool TagNoOp(const std::string &tag, TagAttrs &m);
     // audio (lua_tags_audio.cpp)
     bool TagAudio(const std::string &tag, TagAttrs &m);
