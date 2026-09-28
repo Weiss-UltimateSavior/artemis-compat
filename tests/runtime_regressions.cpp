@@ -456,6 +456,21 @@ int main(int argc, char** argv) {
     // Separate Lua instance avoids depending on game-global button tables.
     artc::LuaEngine events;
     Check(events.Init(&packs, ini, "android", 1280, 720, &compositor), "event engine init");
+    Check(events.DoString(R"(
+        assert(e:var('s.current_message_layer') == '')
+        e:tag{'chgmsg', id='dialogue'}
+        assert(e:var('s.current_message_layer') == 'dialogue')
+        e:tag{'chgmsg', id='icon', layered=1}
+        assert(e:var('s.current_message_layer') == 'icon')
+        e:tag{'/chgmsg'}
+        assert(e:var('s.current_message_layer') == 'dialogue')
+        e:tag{'chgmsg', id='dialogue'}
+        e:tag{'/chgmsg'}
+        assert(e:var('s.current_message_layer') == 'dialogue')
+        e:tag{'/chgmsg'}
+        e:tag{'/chgmsg'}
+        assert(e:var('s.current_message_layer') == '')
+    )", "nested message selection"), "closing a nested message restores the previous selection");
     Check(events.DoString("calls=0; function button(e,p) calls=calls+1 end; "
                           "e:setEventFilter(function(e,kind,p) return 1 end); "
                           "e:tag{'lyevent',id='500.1',type='click',handler='calllua',['function']='button'}",

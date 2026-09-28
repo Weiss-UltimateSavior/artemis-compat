@@ -124,7 +124,13 @@ bool LuaEngine::TagGlyph(const std::string &tag, TagAttrs &m) {
 bool LuaEngine::TagChgMsg(const std::string &tag, TagAttrs &m) {
     if (!compositor_) return false;
     auto it = m.find("id");
+    // Temporary selections (icons, names, UI text) nest inside the active
+    // scenario message. /chgmsg must return to that caller's layer.
+    msg_layer_stack_.push_back(msg_layer_);
     msg_layer_ = it == m.end() ? std::string() : it->second;
+    sysvals_["current_message_layer"] = msg_layer_;
+    if (const auto layered = m.find("layered"); layered != m.end())
+        compositor_->SetMessageLayered(msg_layer_, layered->second != "0");
     return true;
 }
 
@@ -136,7 +142,9 @@ bool LuaEngine::TagScetween(const std::string &tag, TagAttrs &m) {
 
 bool LuaEngine::TagChgMsgEnd(const std::string &tag, TagAttrs &m) {
     if (!compositor_) return false;
-    msg_layer_.clear();
+    msg_layer_ = msg_layer_stack_.empty() ? std::string() : msg_layer_stack_.back();
+    if (!msg_layer_stack_.empty()) msg_layer_stack_.pop_back();
+    sysvals_["current_message_layer"] = msg_layer_;
     return true;
 }
 
