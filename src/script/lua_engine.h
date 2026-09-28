@@ -444,6 +444,8 @@ private:
     std::map<std::string, std::string> font_name_;   // small visible area
     std::map<std::string, std::string> font_defaults_; // [fontdefault]
     std::map<std::string, std::string> glyph_config_;  // [glyph] click-wait icon
+    std::string glyph_message_layer_;  // message layer selected at [glyph] time
+    void HomeGlyph();                  // [glyph homing=1] follow the text pen
     bool link_active_ = false, link_enabled_ = true;   // [link]/[linkdisable]
     std::string link_file_, link_label_;
     std::chrono::steady_clock::time_point wait_until_;

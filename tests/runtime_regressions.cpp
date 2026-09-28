@@ -478,6 +478,21 @@ int main(int argc, char** argv) {
         e:tag{'/chgmsg'}
         assert(e:var('s.current_message_layer') == '')
     )", "nested message selection"), "closing a nested message restores the previous selection");
+    Check(events.DoString(R"(
+        e:tag{'chgmsg', id='dialogue'}
+        e:tag{'glyph', layer='1.90', homing='1'}
+        e:tag{'print', data='AAAA'}
+        e:tag{'/chgmsg'}
+    )", "glyph homing"), "glyph tag homes the click-wait layer to the text end");
+    const auto glyph_info = compositor.GetLayerInfo("1.90");
+    // Host-mock text: 40 units per glyph on a layer created at (40, 600).
+    Check(glyph_info.found && glyph_info.left == 200 && glyph_info.top == 600,
+          "homing parks the glyph at the end-of-text pen across parent chains");
+    Check(events.DoString("e:tag{'chgmsg', id='dialogue'}; "
+        "e:tag{'glyph', layer='1.91', homing='0'}; e:tag{'print', data='AA'}; e:tag{'/chgmsg'}",
+        "fixed glyph"), "homing=0 keeps the scripted glyph position");
+    Check(!compositor.GetLayerInfo("1.91").found,
+          "homing=0 never materializes or moves the glyph layer");
     Check(events.DoString("calls=0; function button(e,p) calls=calls+1 end; "
                           "e:setEventFilter(function(e,kind,p) return 1 end); "
                           "e:tag{'lyevent',id='500.1',type='click',handler='calllua',['function']='button'}",

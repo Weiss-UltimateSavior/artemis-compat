@@ -118,7 +118,22 @@ bool LuaEngine::TagFontClose(const std::string &tag, TagAttrs &m) {
 bool LuaEngine::TagGlyph(const std::string &tag, TagAttrs &m) {
     if (!compositor_) return false;
     glyph_config_ = {m.begin(), m.end()};
+    // The glyph follows the message layer selected when it is configured
+    // (the framework chgmsg's to the scenario layer before [glyph]).
+    glyph_message_layer_ = msg_layer_;
+    HomeGlyph();
     return true;
+}
+
+// [glyph homing=1] — park the click-wait glyph layer at the end-of-text pen
+// of its message layer. homing=0 (or no layer) keeps the scripted position.
+void LuaEngine::HomeGlyph() {
+    if (!compositor_ || glyph_message_layer_.empty()) return;
+    const auto layer = glyph_config_.find("layer");
+    if (layer == glyph_config_.end() || layer->second.empty()) return;
+    const auto homing = glyph_config_.find("homing");
+    if (homing == glyph_config_.end() || homing->second == "0") return;
+    compositor_->HomeLayerToTextPen(glyph_message_layer_, layer->second);
 }
 
 bool LuaEngine::TagChgMsg(const std::string &tag, TagAttrs &m) {
@@ -152,6 +167,7 @@ bool LuaEngine::TagRp(const std::string &tag, TagAttrs &m) {
     if (!compositor_ || msg_layer_.empty()) return false;
     msg_text_.erase(msg_layer_);
     compositor_->SetText(msg_layer_, "", 40, 0xffffff);
+    if (msg_layer_ == glyph_message_layer_) HomeGlyph();
     return true;
 }
 
@@ -217,6 +233,7 @@ bool LuaEngine::TagPrint(const std::string &tag, TagAttrs &m) {
     }
     compositor_->SetText(
             msg_layer_, text, size, color, wrap, fr, page.ruby);
+    if (msg_layer_ == glyph_message_layer_) HomeGlyph();
     return true;
 }
 

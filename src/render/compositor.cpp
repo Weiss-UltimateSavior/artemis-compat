@@ -176,6 +176,38 @@ bool Compositor::ParentDelta(const std::string& id, float dx, float dy, float* x
     return true;
 }
 
+bool Compositor::HomeLayerToTextPen(const std::string& text_id,
+                                    const std::string& glyph_id) {
+    const Layer* text = nullptr;
+    for (const auto& l : layers_)
+        if (l.id == text_id) { text = &l; break; }
+    if (!text) return false;
+    const auto tm = EffectiveTransform(*text);
+    const auto pen = tm.Point(text->text_pen_x, text->text_pen_y);
+    // An identity probe with the glyph's id collects exactly its ancestors,
+    // so the stage-space pen converts back into the glyph's parent space.
+    Layer probe; probe.id = glyph_id;
+    const auto gm = EffectiveTransform(probe);
+    const float det = gm.a * gm.d - gm.b * gm.c;
+    if (!std::isfinite(det) || std::abs(det) < 1e-8f) return false;
+    const float dx = pen.first - gm.tx, dy = pen.second - gm.ty;
+    const float lx = (gm.d * dx - gm.c * dy) / det;
+    const float ly = (gm.a * dy - gm.b * dx) / det;
+    ++revision_;
+    for (auto& l : layers_) {
+        if (l.id != glyph_id) continue;
+        l.x = lx; l.y = ly; l.own_pos = true;
+        return true;
+    }
+    // Same fallback as SetProps: a pure group layer may never have been
+    // created by lyc — materialize it so children inherit the transform.
+    Layer g;
+    g.id = glyph_id;
+    g.x = lx; g.y = ly; g.own_pos = true;
+    layers_.push_back(g);
+    return true;
+}
+
 std::string Compositor::HitLayer(float x, float y) const {
     const Layer *best = nullptr;
     for (const auto &l : layers_) {
@@ -1102,6 +1134,7 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     if (text.empty()) {
         for (auto& l : layers_) if (l.id == id) {
             l.glyphs.clear(); l.text.clear();
+            l.text_pen_x = l.text_pen_y = 0;
             if (l.texture) glDeleteTextures(1, &l.texture);
             l.texture = 0;
             l.tex_w = l.tex_h = 0;
@@ -1290,6 +1323,15 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     const int tex_h = bottom;
     if (tex_h <= 0 || tex_h > 4096) return false;
 
+    // [glyph homing=1] — where the next character would go: the end of the
+    // final line, including that line's alignment shift (matching the glyph
+    // placement below). A trailing newline parks the pen on the fresh line.
+    const int end_free = tex_w - 2 * outline - line_w[line];
+    const float pen_x = static_cast<float>(pen) +
+        (align == "center" ? end_free / 2.0f
+                           : (align == "right" ? static_cast<float>(end_free) : 0.0f));
+    const float pen_y = static_cast<float>(line * line_h);
+
     // Each glyph occupies its own padded atlas cell. Overlapping outlines
     // and kerning must not reveal neighbouring letters during a character
     // tween. The complete line layout stays fixed throughout the animation.
@@ -1348,6 +1390,8 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
             l.h = (float)tex_h;
             l.content_x = number("left", 0);
             l.content_y = number("top", 0);
+            l.text_pen_x = pen_x;
+            l.text_pen_y = pen_y;
             Log(kLogInfo, "SetText: replaced " + id + " " +
                               std::to_string(tex_w) + "x" + std::to_string(tex_h) +
                               " (glyphs " + std::to_string(l.glyphs.size()) + ")");
@@ -1362,6 +1406,8 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     l.w = (float)tex_w; l.h = (float)tex_h;
     l.content_x = number("left", 0);
     l.content_y = number("top", 0);
+    l.text_pen_x = pen_x;
+    l.text_pen_y = pen_y;
     l.z = 100; // above scene layers
     layers_.push_back(l);
     Log(kLogInfo, "SetText: " + id + " " + std::to_string(tex_w) + "x" +
@@ -1943,6 +1989,7 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
             l.texture = kHostTexture;
             l.tex_w = tw; l.tex_h = th;
             l.w = (float)tw; l.h = (float)th;
+            l.text_pen_x = (float)tw; l.text_pen_y = 0;
             Log(kLogInfo, "SetText: replaced " + id + " " + std::to_string(tw) + "x" +
                               std::to_string(th) + " '" + text.substr(0, 24) + "'");
             return true;
@@ -1953,6 +2000,7 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     l.texture = kHostTexture;
     l.tex_w = tw; l.tex_h = th;
     l.w = (float)tw; l.h = (float)th;
+    l.text_pen_x = (float)tw; l.text_pen_y = 0;
     l.x = 40.0f;
     l.y = (float)stage_h_ - (float)th - 60.0f;
     l.z = 100;
