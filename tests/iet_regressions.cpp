@@ -14,6 +14,7 @@
 #include "script/lua_engine.h"
 #include "script/preprocess.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -110,6 +111,20 @@ const char *kLinearScript =
     "[ietTwo]\n"
     "[stop]\n";
 
+const char *kCommentScript =
+    "[&autoinsert target=blankline command=\"[ietUnexpectedBlank]\"]\n"
+    "/* synthetic examples must never execute\n"
+    "[ietCommentedOut]\n"
+    "[&linetag allow=1]\n"
+    "[lua]\nerror('commented Lua ran')\n[/lua]\n"
+    "\n*/ [ietAfterComment]\n"
+    "[ietBeforeInline] /* [ietHiddenInline] */\n"
+    "/* [ietHiddenPrefix] */ [ietAfterInline]\n"
+    "[ietQuoted value=\"/* literal */\"]\n"
+    "[lua]\nassert('/* literal */' == '/' .. '* literal *' .. '/')\n[/lua]\n"
+    "[ietAfterLua]\n"
+    "[stop]\n";
+
 std::vector<std::string> OnlyIetSteps(const std::vector<std::string> &steps) {
     std::vector<std::string> out;
     for (const auto &s : steps)
@@ -130,6 +145,7 @@ int main() {
             {"system.ini", "[ANDROID]\nWIDTH=1280\nHEIGHT=720\n"},
             {"system/first.iet", kLinearScript},
             {"linear.iet", kLinearScript},
+            {"comments.iet", kCommentScript},
         });
         std::ofstream out(pack_path, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char *>(bytes.data()), (std::streamsize)bytes.size());
@@ -210,6 +226,67 @@ int main() {
         const auto asb_steps = OnlyIetSteps(trace.steps());
         Check(asb_steps == linear_steps,
               "both .iet paths dispatch the same tag sequence");
+    }
+
+    // ---- 4) comments precede directives/segments, preserving source lines --
+    {
+        const std::string input = kCommentScript;
+        const std::string output = artc::PreprocessScript(input);
+        Check(std::count(input.begin(), input.end(), '\n') ==
+                  std::count(output.begin(), output.end(), '\n'),
+              "block comments preserve physical source line numbers");
+        Check(artc::PreprocessScript("before/* inline */ after\n/* one */[ietKept]/* two */") ==
+                  "before after\n[ietKept]",
+              "inline comments preserve surrounding text and tags");
+        Check(artc::PreprocessScript("[ietOne]/* [ietHidden] */[ietTwo]") ==
+                  "[ietOne][ietTwo]",
+              "comments between bracket groups are removed before segmentation");
+        Check(artc::PreprocessScript("// /* ignored\n; /* ignored\n*label\n[ietKept]") ==
+                  "// /* ignored\n; /* ignored\n*label\n[ietKept]",
+              "line comments cannot open a block comment");
+        Check(artc::PreprocessScript("[ietKept]\n/* unfinished\n[ietHidden]") ==
+                  "[ietKept]\n\n",
+              "unterminated comments stay inactive through end of file");
+        Check(artc::PreprocessScript("[ietNextFile]") == "[ietNextFile]",
+              "comment state is local to each script");
+        Check(artc::PreprocessScript("/* [&linetag allow=1] */\nplain text") ==
+                  "\nplain text", "commented directives cannot change preprocessing");
+        const std::string quoted = "[ietQuoted value=\"/* literal */\"]";
+        Check(artc::PreprocessScript(quoted) == quoted,
+              "block delimiters in quoted attributes are literal");
+        const std::string lua = "[lua]\nlocal s = '/* literal */'\n[/lua]";
+        Check(artc::PreprocessScript(lua) == lua,
+              "Lua blocks pass through byte for byte");
+    }
+
+    // ---- 5) both execution paths ignore tags and Lua inside comments ------
+    for (bool linear : {true, false}) {
+        Trace trace;
+        artc::SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (comments)");
+        if (linear) {
+            artc::IetRunner iet(&packs, &lua);
+            Check(iet.Run("comments.iet"), "linear comment fixture");
+        } else {
+            artc::AsbRunner runner;
+            runner.SetPackSource(&packs);
+            runner.SetLuaEngine(&lua);
+            Check(runner.Jump("comments.iet", ""), "load comment fixture");
+            for (int i = 0; i < 200 && runner.Loaded() && !runner.Halted(); ++i)
+                runner.ExecuteLine(lua);
+        }
+        artc::SetLogSink(nullptr);
+        Check(OnlyIetSteps(trace.steps()) == std::vector<std::string>{
+                  "ietAfterComment", "ietBeforeInline", "ietAfterInline",
+                  "ietQuoted", "ietAfterLua"},
+              linear ? "linear path ignores commented tags" : "asb path ignores commented tags");
+        for (const auto &line : trace.lines) {
+            Check(line.find("commented Lua ran") == std::string::npos,
+                  "commented Lua is not evaluated, including at load time");
+            Check(line.find("assertion failed") == std::string::npos,
+                  "Lua string content is unchanged");
+        }
     }
 
     fs::remove_all(dir);
