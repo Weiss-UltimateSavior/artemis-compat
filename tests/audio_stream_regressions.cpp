@@ -56,6 +56,17 @@ int main() {
           stream.ReadStereo(actual.data(),actual.size()/2)==actual.size()/2 && stream.Ended(),
           "loop=0 plays both intro and body exactly once");
     Check(std::equal(actual.begin(),actual.end(),expected.begin()),"non-looping segment PCM");
+    Check(stream.Open(read,"tone_a",true) && stream.HasLoopSegment(),
+          "extensionless audio resolves the Vorbis file and its intro companion");
+    actual.resize(expected.size());
+    Check(stream.ReadStereo(actual.data(),actual.size()/2)==actual.size()/2 && actual==expected,
+          "extensionless playback preserves the exact intro and loop PCM");
+    files["exact"] = files.at("tone_a.ogg");
+    files["exact.ogg"] = files.at("tone_b.ogg");
+    Check(stream.Open(read,"exact",false), "an exact extensionless resource takes precedence");
+    actual.resize(intro.size());
+    Check(stream.ReadStereo(actual.data(),actual.size()/2)==actual.size()/2 && actual==intro,
+          "extension inference does not replace an existing resource");
     files.erase("tone_b.ogg");
     Check(stream.Open(read, "tone_a.ogg", true) && !stream.HasLoopSegment(), "missing companion falls back to full-file loop");
     actual.resize(intro.size()*2);
