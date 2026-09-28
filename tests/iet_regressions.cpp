@@ -125,6 +125,20 @@ const char *kCommentScript =
     "[ietAfterLua]\n"
     "[stop]\n";
 
+const char *kPositionalScript =
+    "[lua]\n"
+    "e:setTagFilter(function(e, tag, p)\n"
+    "  if tag == 'ietPositional' then\n"
+    "    assert(p['0'] == '0' and p['1'] == '37' and p['2'] == 'part one')\n"
+    "    assert(p.file == 'demo' and p['3'] == '-2')\n"
+    "    assert(p['4'] == '' and p['5'] == 'a=b,c')\n"
+    "    e:tag{'ietParamsVerified'}\n"
+    "  end\n"
+    "  return 0\n"
+    "end)\n[/lua]\n"
+    "[ietPositional 0 37 \"part one\" file=\"demo\" -2 \"\" \"a=b,c\"]\n"
+    "[stop]\n";
+
 std::vector<std::string> OnlyIetSteps(const std::vector<std::string> &steps) {
     std::vector<std::string> out;
     for (const auto &s : steps)
@@ -146,6 +160,7 @@ int main() {
             {"system/first.iet", kLinearScript},
             {"linear.iet", kLinearScript},
             {"comments.iet", kCommentScript},
+            {"positional.iet", kPositionalScript},
         });
         std::ofstream out(pack_path, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char *>(bytes.data()), (std::streamsize)bytes.size());
@@ -287,6 +302,29 @@ int main() {
             Check(line.find("assertion failed") == std::string::npos,
                   "Lua string content is unchanged");
         }
+    }
+
+    // ---- 6) unnamed tag parameters reach Lua as zero-based string keys ----
+    for (bool linear : {true, false}) {
+        Trace trace;
+        artc::SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (positional)");
+        if (linear) {
+            artc::IetRunner iet(&packs, &lua);
+            Check(iet.Run("positional.iet"), "linear positional fixture");
+        } else {
+            artc::AsbRunner runner;
+            runner.SetPackSource(&packs);
+            Check(runner.Jump("positional.iet", ""), "load positional fixture");
+            for (int i = 0; i < 200 && runner.Loaded() && !runner.Halted(); ++i)
+                runner.ExecuteLine(lua);
+        }
+        artc::SetLogSink(nullptr);
+        Check(OnlyIetSteps(trace.steps()) ==
+                  std::vector<std::string>{"ietParamsVerified", "ietPositional"},
+              linear ? "linear path preserves positional parameters" :
+                       "asb path preserves positional parameters");
     }
 
     fs::remove_all(dir);

@@ -1,4 +1,5 @@
 #include "script/asb_parser.h"
+#include "script/iet_parser.h"
 #include "script/lua_engine.h"
 #include "script/preprocess.h"
 #include "util/encoding.h"
@@ -402,39 +403,10 @@ bool AsbRunner::ExecuteLine(LuaEngine& lua) {
 
 namespace {
 
-// Splits `inner` ("tag key="v" k2=v2") into command + attrs. Quoted values
-// keep spaces; bare values run to the next space.
 void ParseIetBracket(const std::string &inner, AsbLine *out) {
-    size_t i = 0;
-    while (i < inner.size() && (inner[i] == ' ' || inner[i] == '\t')) ++i;
-    size_t start = i;
-    while (i < inner.size() && inner[i] != ' ' && inner[i] != '\t') ++i;
     out->is_label = false;
-    out->command = inner.substr(start, i - start);
     out->lineno = 0;
-    out->attrs.clear();
-    while (i < inner.size()) {
-        while (i < inner.size() && (inner[i] == ' ' || inner[i] == '\t')) ++i;
-        if (i >= inner.size()) break;
-        start = i;
-        while (i < inner.size() && inner[i] != '=' && inner[i] != ' ') ++i;
-        if (i >= inner.size() || inner[i] == ' ') { // bare token — skip
-            i = start;
-            while (i < inner.size() && inner[i] != ' ') ++i;
-            continue;
-        }
-        const std::string key = inner.substr(start, i - start);
-        ++i; // '='
-        std::string val;
-        if (i < inner.size() && inner[i] == '"') {
-            ++i;
-            while (i < inner.size() && inner[i] != '"') val += inner[i++];
-            if (i < inner.size()) ++i;
-        } else {
-            while (i < inner.size() && inner[i] != ' ') val += inner[i++];
-        }
-        out->attrs.emplace_back(key, val);
-    }
+    ParseIetInstruction(inner, out->command, out->attrs);
 }
 
 } // namespace
