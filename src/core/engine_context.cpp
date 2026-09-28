@@ -153,6 +153,7 @@ bool EngineContext::BootFramework(bool drain_boot_queue) {
     }
     runner_ = std::make_unique<AsbRunner>();
     runner_->SetPackSource(packs_.get());
+    runner_->SetLuaEngine(lua_.get());
 
     IetRunner iet(packs_.get(), lua_.get());
     if (!iet.Run("system/first.iet")) {

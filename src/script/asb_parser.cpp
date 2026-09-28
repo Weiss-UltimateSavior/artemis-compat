@@ -104,11 +104,26 @@ bool AsbRunner::Load(const std::vector<uint8_t> &image, const std::string &label
     halted_ = false;
     pc_ = 0;
     pc_pending_ = false;
+    lua_chunks_loaded_ = !binary && lua_ != nullptr;
+    if (lua_chunks_loaded_) RunLoadTimeLuaChunks();
     if (!label.empty() && !FindLabel(label, &pc_)) {
         Log(kLogWarn, "asb: label not found: " + label);
         pc_ = 0;
     }
     return true;
+}
+
+void AsbRunner::RunLoadTimeLuaChunks() {
+    for (const auto &line : script_.lines) {
+        if (!line.is_label && line.command == "\x02LUA") {
+            for (const auto &kv : line.attrs) {
+                if (kv.first == "code") {
+                    lua_->DoString(kv.second, "iet:load-lua");
+                    break;
+                }
+            }
+        }
+    }
 }
 
 bool AsbRunner::Jump(const std::string &file, const std::string &label) {
@@ -339,7 +354,9 @@ bool AsbRunner::ExecuteLine(LuaEngine& lua) {
     const std::string index_attr =
         attr((std::string(kBranchPrefix) + "index").c_str());
     const std::string branch_index = index_attr.empty() ? attr("index") : index_attr;
-    if (line.command == "\x02LUA") lua.DoString(attr("code"), "asb:lua");
+    if (line.command == "\x02LUA") {
+        if (!lua_chunks_loaded_) lua.DoString(attr("code"), "asb:lua");
+    }
     else if (line.command == "calllua") lua.CallGlobal(attr("function"));
     else if (line.command == "jump" || line.command == "call") {
         const std::string file = attr("file").empty() ? current_file_ : attr("file");

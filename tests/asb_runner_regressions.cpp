@@ -170,6 +170,17 @@ int main() {
             // a different boot script whose cursor has no game_start label;
             // the bare jump must resolve to macro_x.iet (cross-file index)
             {"boot_x.iet", "*start\n[stepB1]\n[jump label=\"game_start\"]\n[stepDead]\n"},
+            // a top-level [lua] block defining a global sits ABOVE the entry
+            // label; the label-gated flow then calllua's that global.
+            {"luaent.iet",
+             "*top\n[lua]\nlua_init_count = (lua_init_count or 0) + 1\n"
+             "function lua_global_fn() e:tag{\"luaDef\"} end\n[/lua]\n"
+             "*entry\n[calllua function=\"lua_global_fn\"]\n[stepLU]\n[return]\n"},
+            {"queue_init.iet",
+             "[lua]\nfunction queue_ready() e:tag{\"stepQueueReady\"} end\n[/lua]\n"
+             "[stepQueueInit]\n[return]\n"},
+            {"queue_after.iet",
+             "*entry\n[calllua function=\"queue_ready\"]\n[stepQueueAfter]\n[stop]\n"},
         });
         std::ofstream out(pack_path, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char *>(bytes.data()), (std::streamsize)bytes.size());
@@ -324,6 +335,65 @@ int main() {
         empty.SetPackSource(&packs);
         Check(empty.Jump("", "x") && empty.Call("", "x"), "context-less empty target safe");
         Check(!trace.has("script not found in packs: "), "no missing-script read");
+    }
+
+    // ---- 7) text script load executes all top-level Lua initialization ----
+    {
+        Trace trace;
+        artc::SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (load-time blocks)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        // Enter at a later label; library globals must be available before
+        // the label-gated flow reaches calllua.
+        Check(runner.Jump("luaent.iet", "entry"), "load luaent.iet at entry");
+        Run(runner, lua);
+        Check(lua.DoString("assert(lua_init_count == 1)", "initializer count"),
+              "entry label initializes the script once");
+        Check(runner.Jump("luaent.iet", "top"), "revisit text script from its start");
+        Run(runner, lua);
+        Check(lua.DoString("assert(lua_init_count == 1)", "initializer count after traversal"),
+              "normal traversal does not execute load-time Lua again");
+        artc::SetLogSink(nullptr);
+        Check(trace.has("luaDef") && trace.has("stepLU"),
+              "load-time Lua definitions run before the entry-label flow");
+    }
+
+    // ---- 8) loading queued libraries initializes Lua before the entry jump --
+    {
+        Trace trace;
+        artc::SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (boot queue)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.EnqueueTag("call", {{"file", "queue_init.iet"}});
+        lua.EnqueueTag("jump", {{"file", "queue_after.iet"}, {"label", "entry"}});
+        auto drain = [&]() {
+            while (!lua.IsWaiting() && lua.HasQueuedTag()) {
+                std::string name, file, label;
+                std::vector<std::pair<std::string, std::string>> attrs;
+                if (!lua.PopQueuedTag(&name, &attrs)) break;
+                for (const auto& kv : attrs) {
+                    if (kv.first == "file") file = kv.second;
+                    if (kv.first == "label") label = kv.second;
+                }
+                if (name == "call") runner.Call(file, label);
+                else if (name == "jump") runner.Jump(file, label);
+                else lua.DispatchTag(name, attrs, false);
+            }
+        };
+        for (int i = 0; i < 100; ++i) {
+            drain();
+            if (runner.Loaded() && !runner.Halted() && !lua.IsWaiting()) runner.ExecuteLine(lua);
+        }
+        artc::SetLogSink(nullptr);
+        Check(OnlyStepsWithPrefix(trace.steps(), "stepQueue") ==
+                  std::vector<std::string>{"stepQueueReady", "stepQueueAfter"},
+              "queued loads initialize Lua without executing skipped tag bodies");
     }
 
     fs::remove_all(dir);

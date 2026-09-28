@@ -45,6 +45,9 @@ bool ParseIetScript(const std::string &text, AsbScript *out);
 class AsbRunner {
 public:
     void SetPackSource(PackManager *packs) { packs_ = packs; }
+    // Text .iet [lua] chunks are file initialization and run when the script
+    // is loaded, before entry-label execution.
+    void SetLuaEngine(LuaEngine *lua) { lua_ = lua; }
     // Read `file` from the pack chain, parse, and seek `label`.
     bool Jump(const std::string &file, const std::string &label);
     // Jump with a return address, including cross-file calls.
@@ -81,6 +84,7 @@ public:
 
 private:
     bool Load(const std::vector<uint8_t> &image, const std::string &label);
+    void RunLoadTimeLuaChunks();
     bool FindLabel(const std::string &label, size_t *pc);
     // Index every label of the currently loaded script to its file. The ADV
     // framework loads macro.iet/macro2.iet/… once at boot; afterwards a jump
@@ -93,12 +97,14 @@ private:
     AsbScript script_;
     size_t pc_ = 0;
     bool loaded_ = false;
+    bool lua_chunks_loaded_ = false;
     // True when pc_ was just set by a [return]/Return(): the instruction there
     // has not executed yet, so a call issued before it runs must resume *at*
     // it (not after) — ResetStack()+uitrans() relies on this.
     bool pc_pending_ = false;
     bool halted_ = false;
     PackManager *packs_ = nullptr;
+    LuaEngine *lua_ = nullptr;
     std::string current_file_;   // cache: the main loop re-jumps every frame
     size_t file_lines_ = 0;
     size_t file_labels_ = 0;
