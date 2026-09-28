@@ -48,6 +48,7 @@ struct Layer {
     float w = 0, h = 0;        // display size in stage units (0 = natural size)
     float alpha = 1.0f;
     bool visible = true;
+    bool message_overlay = false; // chgmsg layered=0: outside the scene's ID order
     int z = 0;                 // higher = closer to viewer (ID leading number)
     float u0 = 0, v0 = 0, u1 = 1, v1 = 1;  // clip region (normalized UV)
     float ax = 0, ay = 0;      // anchor point within the image
@@ -105,6 +106,7 @@ public:
                  const std::map<std::string, std::string>& style = {},
                  const std::vector<TextRuby>& ruby = {});
     void SetTextTween(const std::string& id, const std::map<std::string, std::string>& attrs);
+    void SetMessageLayered(const std::string& id, bool layered);
     double PendingTextMs(double now_ms) const;
     bool FinishText(double now_ms);
     // Override a layer's geometry with a warped triangle list (x,y,u,v per

@@ -808,7 +808,12 @@ int LuaEngine::l_var(lua_State *L) {
         auto sit = self->sysvals_.find(key);
         Log(kLogDebug, std::string("e:var('") + name + "') -> sys " +
                            (sit == self->sysvals_.end() ? "(miss)" : sit->second));
-        lua_pushstring(L, sit == self->sysvals_.end() ? "" : sit->second.c_str());
+        // Unassigned bare tag parameters use the numeric sentinel expected
+        // by legacy parameter fallbacks. Named variable banks retain their
+        // empty-string default, and an explicitly stored empty value wins.
+        const char* missing = key.find('.') == std::string::npos &&
+                              std::string(name).rfind("s.", 0) != 0 ? "0" : "";
+        lua_pushstring(L, sit == self->sysvals_.end() ? missing : sit->second.c_str());
     } else {
         lua_pushlstring(L, it->second.data(),it->second.size());
     }

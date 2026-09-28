@@ -211,9 +211,11 @@ int main() {
           "ruby spacing leaves a gap and text origin composes with layer translation");
     Check(c.SetText("2","",10,0xffffff,30), "clear empty message");c.Draw();
     Check(At(7,7)[0]==0 && At(7,7)[2]==255, "empty print removes previous glyph pixels");
+    artc::Audio message_audio;
+    message_audio.Init(&packs);
     artc::LuaEngine messages;
     artc::Ini ini;
-    Check(messages.Init(&packs,ini,"android",32,32,&c), "message engine init");
+    Check(messages.Init(&packs,ini,"android",32,32,&c,&message_audio), "message engine init");
     Check(messages.DoString("e:tag{'chgmsg',id='2'}; e:tag{'font',face='font.ttf',size=10,width=30}; "
         "e:tag{'print',data='A'}; e:tag{'/chgmsg'}; e:tag{'chgmsg',id='4'}; "
         "e:tag{'font',face='font.ttf',size=10,width=30}; e:tag{'print',data='A'}; "
@@ -228,6 +230,29 @@ int main() {
         "recreate message"), "delete message layer"); c.Draw();
     Check(At(9,4)[0]==0, "deleting a layer clears its saved page");
     c.DeleteLayer("2");
+    {
+        artc::LuaEngine nested_messages;
+        Check(nested_messages.Init(&packs,ini,"android",32,32,&c), "nested messages init");
+        Check(nested_messages.DoString(R"(
+            e:tag{'chgmsg',id='dialogue',layered=0}
+            e:tag{'font',face='font.ttf',size=10,width=30}
+            e:tag{'print',data='A'}
+            e:tag{'chgmsg',id='icon',layered=1}
+            e:tag{'font',size=10,width=30,left=20}
+            e:tag{'print',data='A'}
+            e:tag{'/chgmsg'}
+            assert(e:var('s.current_message_layer')=='dialogue')
+            e:tag{'print',data='A'}
+        )", "nested message pixels"), "nested icon restores the scenario message and its font");
+        c.Draw();
+        Check(At(3,4)[0]==255 && At(9,4)[0]==255 && At(23,4)[0]==0,
+              "non-layered message renders above the scene; layered icon retains ID order");
+        Check(nested_messages.DoString("e:tag{'chgmsg',id='dialogue',layered=1}; e:tag{'/chgmsg'}",
+                                      "change message layering"), "change existing message layering");
+        c.Draw();
+        Check(At(3,4)[0]==0 && At(9,4)[0]==0, "layered message returns to scene ID order");
+        c.DeleteLayer("dialogue"); c.DeleteLayer("icon");
+    }
     c.DeleteTweens("1"); c.SetProps("1",{{"alpha","255"}});
     c.Update(3000);
     c.SetTextTween("2",{{"mode","init"},{"type","in"}});

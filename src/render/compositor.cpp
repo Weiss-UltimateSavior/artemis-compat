@@ -90,6 +90,11 @@ int SectionCount(const std::string &id) {
     return n;
 }
 
+int LayerZCmp(const Layer& a, const Layer& b) {
+    if (a.message_overlay != b.message_overlay) return a.message_overlay ? 1 : -1;
+    return ZCmp(a.id, b.id);
+}
+
 void Compositor::EffectiveRect(const Layer &l, float *ex, float *ey,
                                float *ea, bool *ev) const {
     float w, h;
@@ -177,7 +182,7 @@ std::string Compositor::HitLayer(float x, float y) const {
         if (!ContainsPoint(l,x,y)) continue;
         if (!best) best = &l;
         else {
-            const int c = ZCmp(l.id, best->id);
+            const int c = LayerZCmp(l, *best);
             const bool lFront = c > 0 ||
                                 (c == 0 &&
                                  SectionCount(l.id) > SectionCount(best->id));
@@ -343,6 +348,15 @@ void Compositor::SetLayerMesh(const std::string &id, const std::vector<float> &v
             if (l.mesh != vertices) { l.mesh = vertices; ++revision_; }
             return;
         }
+}
+
+void Compositor::SetMessageLayered(const std::string& id, bool layered) {
+    if (id.empty()) return;
+    SetProps(id, {});
+    for (auto& l : layers_) if (l.id == id) {
+        l.message_overlay = !layered;
+        return;
+    }
 }
 
 void Compositor::SetTextTween(const std::string& id, const std::map<std::string, std::string>& attrs) {
@@ -657,7 +671,7 @@ std::string Compositor::DescribeDrawList(size_t max_layers) const {
     std::vector<const Layer *> sorted;
     for (const auto &l : layers_) sorted.push_back(&l);
     std::stable_sort(sorted.begin(), sorted.end(), [](const Layer *a, const Layer *b) {
-        const int c = ZCmp(a->id, b->id);
+        const int c = LayerZCmp(*a, *b);
         if (c != 0) return c < 0;
         return SectionCount(a->id) < SectionCount(b->id);
     });
@@ -686,7 +700,7 @@ std::vector<std::string> Compositor::HitLayers(float x, float y) const {
     }
     // topmost first: higher z (ZCmp) then deeper id wins
     std::stable_sort(hits.begin(), hits.end(), [](const Layer *a, const Layer *b) {
-        const int c = ZCmp(a->id, b->id);
+        const int c = LayerZCmp(*a, *b);
         if (c != 0) return c > 0;
         return SectionCount(a->id) > SectionCount(b->id);
     });
@@ -1336,7 +1350,7 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
             l.content_y = number("top", 0);
             Log(kLogInfo, "SetText: replaced " + id + " " +
                               std::to_string(tex_w) + "x" + std::to_string(tex_h) +
-                              " (glyphs " + std::to_string(positioned.size()) + ")");
+                              " (glyphs " + std::to_string(l.glyphs.size()) + ")");
             return true;
         }
     }
@@ -1539,7 +1553,7 @@ void Compositor::Draw() {
     for (const auto &l : layers_) sorted.push_back(&l);
     std::stable_sort(sorted.begin(), sorted.end(),
                      [](const Layer *a, const Layer *b) {
-                         const int c = ZCmp(a->id, b->id);
+                         const int c = LayerZCmp(*a, *b);
                          if (c != 0) return c < 0;   // ascending: lower z first
                          return SectionCount(a->id) < SectionCount(b->id);
                      });

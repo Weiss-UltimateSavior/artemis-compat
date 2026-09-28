@@ -450,12 +450,34 @@ int main(int argc, char** argv) {
     auto_script.ClickAt(10,10); auto_script.RunEnterFrame();
     Check(!auto_script.IsWaiting(), "next click advances after cancelling auto");
 
+    Check(lua.DoString(R"(
+        assert(e:var('unassigned_parameter') == '0')
+        assert(e:var('t.unassigned_parameter') == '')
+        e:tag{'var',name='unassigned_parameter',data=''}
+        assert(e:var('unassigned_parameter') == '')
+    )", "unassigned tag parameter"), "bare parameter defaults distinguish unset from explicit empty values");
+
     artc::Compositor compositor;
     compositor.SetProps("500.1", {{"w", "100"}, {"h", "100"}});
     const_cast<artc::Layer&>(compositor.Layers().front()).texture = 1;
     // Separate Lua instance avoids depending on game-global button tables.
     artc::LuaEngine events;
     Check(events.Init(&packs, ini, "android", 1280, 720, &compositor), "event engine init");
+    Check(events.DoString(R"(
+        assert(e:var('s.current_message_layer') == '')
+        e:tag{'chgmsg', id='dialogue'}
+        assert(e:var('s.current_message_layer') == 'dialogue')
+        e:tag{'chgmsg', id='icon', layered=1}
+        assert(e:var('s.current_message_layer') == 'icon')
+        e:tag{'/chgmsg'}
+        assert(e:var('s.current_message_layer') == 'dialogue')
+        e:tag{'chgmsg', id='dialogue'}
+        e:tag{'/chgmsg'}
+        assert(e:var('s.current_message_layer') == 'dialogue')
+        e:tag{'/chgmsg'}
+        e:tag{'/chgmsg'}
+        assert(e:var('s.current_message_layer') == '')
+    )", "nested message selection"), "closing a nested message restores the previous selection");
     Check(events.DoString("calls=0; function button(e,p) calls=calls+1 end; "
                           "e:setEventFilter(function(e,kind,p) return 1 end); "
                           "e:tag{'lyevent',id='500.1',type='click',handler='calllua',['function']='button'}",

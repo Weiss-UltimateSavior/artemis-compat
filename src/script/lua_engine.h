@@ -426,6 +426,7 @@ private:
     int video_skip_ = 0;
     // message pipeline: chgmsg-selected layer + accumulated print text
     std::string msg_layer_;
+    std::vector<std::string> msg_layer_stack_;
     struct MessagePage {
         std::string text;
         std::vector<TextRuby> ruby;

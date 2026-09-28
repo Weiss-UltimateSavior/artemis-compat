@@ -113,6 +113,33 @@ struct Preprocessor {
     std::string linetag_prefix;
     std::vector<ScpRule> scp_rules;
     bool in_lua = false;
+    bool in_block_comment = false;
+
+    // Remove comments before splitting bracket groups: examples inside a
+    // comment must not register directives or enter Lua mode. Keep newlines
+    // in PreprocessScript and quoted parameter values intact. Like C comments,
+    // these do not nest.
+    std::pair<std::string, bool> StripBlockComments(const std::string &raw) {
+        std::string out;
+        bool had_comment = in_block_comment;
+        bool in_quote = false;
+        for (size_t i = 0; i < raw.size();) {
+            if (in_block_comment) {
+                const size_t end = raw.find("*/", i);
+                if (end == std::string::npos) break;
+                in_block_comment = false;
+                i = end + 2;
+            } else if (!in_quote && raw.compare(i, 2, "/*") == 0) {
+                in_block_comment = true;
+                had_comment = true;
+                i += 2;
+            } else {
+                if (raw[i] == '"') in_quote = !in_quote;
+                out += raw[i++];
+            }
+        }
+        return {out, had_comment};
+    }
 
     bool ApplyDirective(const std::string &inner) {
         std::string tag;
@@ -235,16 +262,23 @@ struct Preprocessor {
             if (Trim(raw) == "[/lua]") in_lua = false;
             return raw;
         }
-        if (raw.find('[') != std::string::npos) {
-            for (const Segment &seg : SplitLineSegments(raw))
-                if (seg.is_tag && Trim(seg.text) == "lua") { in_lua = true; return raw; }
+        const std::string raw_trimmed = Trim(raw);
+        if (!in_block_comment && !raw_trimmed.empty() &&
+            (raw_trimmed.rfind("//", 0) == 0 || raw_trimmed[0] == ';' ||
+             raw_trimmed[0] == '*'))
+            return raw;
+        auto uncommented = StripBlockComments(raw);
+        const std::string &clean = uncommented.first;
+        if (clean.find('[') != std::string::npos) {
+            for (const Segment &seg : SplitLineSegments(clean))
+                if (seg.is_tag && Trim(seg.text) == "lua") { in_lua = true; return Trim(clean); }
         }
-        auto stripped = StripDirectives(raw);
+        auto stripped = StripDirectives(clean);
         const std::string remainder = stripped.first;
         const bool had_directive = stripped.second;
         const std::string trimmed = Trim(remainder);
         if (trimmed.empty()) {
-            if (had_directive) return std::string();
+            if (had_directive || uncommented.second) return std::string();
             return blankline_set ? blankline : remainder;
         }
         if (trimmed.rfind("//", 0) == 0 || trimmed[0] == ';' || trimmed[0] == '*')

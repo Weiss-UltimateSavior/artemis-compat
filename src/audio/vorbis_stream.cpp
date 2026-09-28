@@ -15,14 +15,23 @@ struct VorbisStream::Impl {
         int rate = 0;
         uint64_t frames = 0;
         ~Segment() { if (decoder) stb_vorbis_close(decoder); }
-        bool Open(const Reader& read, const std::string& file) {
-            if (!read(file, bytes) || bytes.empty() || bytes.size() > INT_MAX) return false;
+        bool Open(const Reader& read, std::string file, std::string* resolved = nullptr) {
+            if (!read(file, bytes)) {
+                const auto slash = file.find_last_of("/\\");
+                const auto dot = file.find_last_of('.');
+                if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) return false;
+                file += ".ogg";
+                bytes.clear();
+                if (!read(file, bytes)) return false;
+            }
+            if (bytes.empty() || bytes.size() > INT_MAX) return false;
             int error = 0;
             decoder = stb_vorbis_open_memory(bytes.data(), static_cast<int>(bytes.size()), &error, nullptr);
             if (!decoder) return false;
             const auto info = stb_vorbis_get_info(decoder);
             rate = info.sample_rate;
             frames = stb_vorbis_stream_length_in_samples(decoder);
+            if (resolved) *resolved = file;
             return rate > 0 && info.channels >= 1 && info.channels <= 2 && frames > 0;
         }
     };
@@ -38,13 +47,14 @@ VorbisStream::~VorbisStream() = default;
 bool VorbisStream::Open(const Reader& read, const std::string& file, bool loop) {
     auto next = std::make_unique<Impl>();
     next->first = std::make_unique<Impl::Segment>();
-    if (!next->first->Open(read, file)) return false;
+    std::string resolved;
+    if (!next->first->Open(read, file, &resolved)) return false;
     next->loop = loop;
     next->ended = false;
     next->current = next->first.get();
-    const auto dot = file.find_last_of('.');
-    if (dot != std::string::npos && dot >= 2 && file.compare(dot - 2, 2, "_a") == 0) {
-        std::string companion = file;
+    const auto dot = resolved.find_last_of('.');
+    if (dot != std::string::npos && dot >= 2 && resolved.compare(dot - 2, 2, "_a") == 0) {
+        std::string companion = resolved;
         companion[dot - 1] = 'b';
         auto repeat = std::make_unique<Impl::Segment>();
         if (repeat->Open(read, companion) && repeat->rate == next->first->rate) {

@@ -1,4 +1,5 @@
 #include "script/asb_parser.h"
+#include "script/iet_parser.h"
 #include "script/lua_engine.h"
 #include "script/preprocess.h"
 #include "util/encoding.h"
@@ -104,6 +105,8 @@ bool AsbRunner::Load(const std::vector<uint8_t> &image, const std::string &label
     halted_ = false;
     pc_ = 0;
     pc_pending_ = false;
+    lua_chunks_loaded_ = !binary && lua_ != nullptr;
+    if (lua_chunks_loaded_) RunLoadTimeLuaChunks();
     if (!label.empty() && !FindLabel(label, &pc_)) {
         Log(kLogWarn, "asb: label not found: " + label);
         pc_ = 0;
@@ -111,10 +114,44 @@ bool AsbRunner::Load(const std::vector<uint8_t> &image, const std::string &label
     return true;
 }
 
+void AsbRunner::RunLoadTimeLuaChunks() {
+    for (const auto &line : script_.lines) {
+        if (!line.is_label && line.command == "\x02LUA") {
+            for (const auto &kv : line.attrs) {
+                if (kv.first == "code") {
+                    lua_->DoString(kv.second, "iet:load-lua");
+                    break;
+                }
+            }
+        }
+    }
+}
+
 bool AsbRunner::Jump(const std::string &file, const std::string &label) {
     if (!packs_) {
         Log(kLogError, "asb: no pack source for jump");
         return false;
+    }
+    // A jump whose file is omitted resolves a bare label: prefer the current
+    // script (official same-file semantics), then the cross-file index built
+    // from the boot macro scripts. A still-unresolved target with no script
+    // loaded at all is a malformed placeholder: no-op instead of permanently
+    // halting the runner on a black boot screen.
+    if (file.empty()) {
+        if (loaded_) {
+            size_t pc = 0;
+            if (FindLabel(label, &pc)) {
+                JumpTo(label);
+                return true;
+            }
+            std::string global_file;
+            if (ResolveGlobalLabel(label, &global_file)) {
+                Log(kLogInfo, "asb: bare label " + label + " -> " + global_file);
+                return Jump(global_file, label);
+            }
+        }
+        Log(kLogWarn, "asb: ignoring unresolved bare jump (label=" + label + ")");
+        return true;
     }
     if (std::getenv("ARTC_JUMP_TRACE"))
         Log(kLogInfo, "asb-jump: " + file + ":" + label);
@@ -132,10 +169,31 @@ bool AsbRunner::Jump(const std::string &file, const std::string &label) {
     Log(kLogInfo, "asb: load " + file + " label=" + label);
     if (!Load(image, label)) return false;
     current_file_ = file;
+    IndexLoadedLabels();
+    return true;
+}
+
+void AsbRunner::IndexLoadedLabels() {
+    if (current_file_.empty()) return;
+    for (const auto &lp : script_.labels)
+        global_labels_[lp.first] = current_file_;
+}
+
+bool AsbRunner::ResolveGlobalLabel(const std::string &label, std::string *file) {
+    const auto it = global_labels_.find(label);
+    if (it == global_labels_.end()) return false;
+    if (file) *file = it->second;
     return true;
 }
 
 bool AsbRunner::Call(const std::string &file, const std::string &label) {
+    // A context-less empty call with no script loaded is a malformed
+    // placeholder: do not push a bogus return frame. When a script is loaded,
+    // fall through so bare-label resolution (see Jump) applies.
+    if (file.empty() && !loaded_) {
+        Log(kLogWarn, "asb: ignoring unresolved bare call (label=" + label + ")");
+        return true;
+    }
     // Only record a resume point when the caller's cursor is valid; a
     // Lua-originated estag call whose runner sits at a stale halt must not
     // push a return into a dead region.
@@ -297,7 +355,9 @@ bool AsbRunner::ExecuteLine(LuaEngine& lua) {
     const std::string index_attr =
         attr((std::string(kBranchPrefix) + "index").c_str());
     const std::string branch_index = index_attr.empty() ? attr("index") : index_attr;
-    if (line.command == "\x02LUA") lua.DoString(attr("code"), "asb:lua");
+    if (line.command == "\x02LUA") {
+        if (!lua_chunks_loaded_) lua.DoString(attr("code"), "asb:lua");
+    }
     else if (line.command == "calllua") lua.CallGlobal(attr("function"));
     else if (line.command == "jump" || line.command == "call") {
         const std::string file = attr("file").empty() ? current_file_ : attr("file");
@@ -343,39 +403,10 @@ bool AsbRunner::ExecuteLine(LuaEngine& lua) {
 
 namespace {
 
-// Splits `inner` ("tag key="v" k2=v2") into command + attrs. Quoted values
-// keep spaces; bare values run to the next space.
 void ParseIetBracket(const std::string &inner, AsbLine *out) {
-    size_t i = 0;
-    while (i < inner.size() && (inner[i] == ' ' || inner[i] == '\t')) ++i;
-    size_t start = i;
-    while (i < inner.size() && inner[i] != ' ' && inner[i] != '\t') ++i;
     out->is_label = false;
-    out->command = inner.substr(start, i - start);
     out->lineno = 0;
-    out->attrs.clear();
-    while (i < inner.size()) {
-        while (i < inner.size() && (inner[i] == ' ' || inner[i] == '\t')) ++i;
-        if (i >= inner.size()) break;
-        start = i;
-        while (i < inner.size() && inner[i] != '=' && inner[i] != ' ') ++i;
-        if (i >= inner.size() || inner[i] == ' ') { // bare token — skip
-            i = start;
-            while (i < inner.size() && inner[i] != ' ') ++i;
-            continue;
-        }
-        const std::string key = inner.substr(start, i - start);
-        ++i; // '='
-        std::string val;
-        if (i < inner.size() && inner[i] == '"') {
-            ++i;
-            while (i < inner.size() && inner[i] != '"') val += inner[i++];
-            if (i < inner.size()) ++i;
-        } else {
-            while (i < inner.size() && inner[i] != ' ') val += inner[i++];
-        }
-        out->attrs.emplace_back(key, val);
-    }
+    ParseIetInstruction(inner, out->command, out->attrs);
 }
 
 } // namespace
