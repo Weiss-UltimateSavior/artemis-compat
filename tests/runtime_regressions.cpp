@@ -450,6 +450,13 @@ int main(int argc, char** argv) {
     auto_script.ClickAt(10,10); auto_script.RunEnterFrame();
     Check(!auto_script.IsWaiting(), "next click advances after cancelling auto");
 
+    Check(lua.DoString(R"(
+        assert(e:var('unassigned_parameter') == '0')
+        assert(e:var('t.unassigned_parameter') == '')
+        e:tag{'var',name='unassigned_parameter',data=''}
+        assert(e:var('unassigned_parameter') == '')
+    )", "unassigned tag parameter"), "bare parameter defaults distinguish unset from explicit empty values");
+
     artc::Compositor compositor;
     compositor.SetProps("500.1", {{"w", "100"}, {"h", "100"}});
     const_cast<artc::Layer&>(compositor.Layers().front()).texture = 1;
