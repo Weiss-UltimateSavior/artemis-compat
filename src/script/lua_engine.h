@@ -108,12 +108,38 @@ public:
     std::string QueuedTagName() const {
         return tag_queue_.empty() ? std::string() : tag_queue_.front().first;
     }
+    // Layer-event registration. The framework emits two kinds of lyevent
+    // tags for the same (id, type): handler registrations (they name a
+    // callback via function=/click=/over=/out=) and mode toggles from
+    // btnstat (mode=enable/disable, no callback). A mode toggle must never
+    // drop the handler registered earlier, and a mode-only registration
+    // must never fire by itself.
+    struct LyeventEntry {
+        std::vector<std::pair<std::string, std::string>> attrs;
+        bool has_handler = false;
+        bool enabled = true;       // latest mode tag (init/enable → true)
+        uint64_t mode_seq = 0;     // registration order of that mode tag
+    };
     void StoreLyevent(const std::string &id,
-                      const std::map<std::string, std::string> &attrs) {
+                      const std::vector<std::pair<std::string, std::string>> &attrs) {
         std::string ty = "click";
-        for (const auto &kv : attrs)
+        bool handler = false;
+        const std::string *mode = nullptr;
+        for (const auto &kv : attrs) {
             if (kv.first == "type") ty = kv.second;
-        lyevents_[id][ty] = {attrs.begin(), attrs.end()};
+            else if (kv.first == "mode") mode = &kv.second;
+            else if (kv.first == "function" || kv.first == "click" ||
+                     kv.first == "over" || kv.first == "out" ||
+                     kv.first == "handler")
+                handler = true;
+        }
+        auto &e = lyevents_[id][ty];
+        if (handler || !e.has_handler) e.attrs = attrs;
+        e.has_handler = e.has_handler || handler;
+        if (mode) {
+            e.enabled = *mode != "disable";
+            e.mode_seq = ++lyevent_seq_;
+        }
     }
 
     // A [stop]/[return] arriving as a tag (e.g. estag_call's final stop)
@@ -375,10 +401,9 @@ private:
     std::map<std::string, std::string> magic_paths_;
     std::map<std::string, std::string> event_handlers_; // onEnterFrame -> Lua fn name
     int enterframe_failures_ = 0;                       // error-log rate limiting
-    std::map<std::string,
-                 std::map<std::string,
-                          std::vector<std::pair<std::string, std::string>>>>
-        lyevents_;   // layer id → event type (click/dragin/drag/dragout) → attrs
+    std::map<std::string, std::map<std::string, LyeventEntry>>
+        lyevents_;            // layer id → event type (click/drag/...) → entry
+    uint64_t lyevent_seq_ = 0; // mode-tag ordering for enable/disable resolution
     // setonpush/delonpush registry (framework key→handler): the CLICK key
     // (tap) drives button activation/dialog routing via setonpush_calllua.
     std::map<int, std::vector<std::pair<std::string, std::string>>> onpush_;

@@ -43,7 +43,7 @@ bool LuaEngine::TagLyEvent(const std::string &tag, TagAttrs &m) {
     // and ignore the siblings so `function` isn't overwritten.
     if (m["type"] != "click" && lyevents_.count(m["id"]))
         return true;
-    StoreLyevent(m["id"], m);
+    StoreLyevent(m["id"], {m.begin(), m.end()});
     return true;
 }
 

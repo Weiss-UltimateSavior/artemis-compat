@@ -504,6 +504,62 @@ int main(int argc, char** argv) {
     events.ClickAt(50,50); events.RunEnterFrame();
     Check(events.DoString("assert(calls==1)", "filter cleared"), "clearing filter restores action exactly once");
     Check(events.IsWaiting(), "button action must not release the scenario wait");
+
+    // lyevent merge model: btnstat's mode-only tags must gate, never replace,
+    // the handler registered for the same (id, type); the NEWEST mode tag on
+    // the owner or its ancestors decides the effective state.
+    auto add_hit_layer = [&](const char *lid, const char *x) {
+        compositor.SetProps(lid, {{"x", x}, {"y", "0"}, {"w", "100"}, {"h", "100"}});
+        for (auto &l : const_cast<std::vector<artc::Layer>&>(compositor.Layers()))
+            if (l.id == lid) { l.texture = 1; break; }
+    };
+    add_hit_layer("500.1.0", "150");
+    add_hit_layer("500.2", "300");
+    add_hit_layer("500.3", "450");
+    add_hit_layer("500.4", "600");
+    Check(events.DoString(R"(
+        qcalls=0; pushes=0
+        function button_q(e,p) qcalls=qcalls+1 end
+        function onkey(e,p) pushes=pushes+1 end
+        -- handler first, then btnstat's disable on the same id, then a group
+        -- enable on the parent (system_btnon): the newer parent mode wins.
+        e:tag{'lyevent', id='500.1.0', type='click', handler='calllua',
+              ['function']='button_q', lua='adv_qsave'}
+        e:tag{'lyevent', id='500.1.0', type='click', mode='disable'}
+        e:tag{'lyevent', id='500.1', type='click', mode='enable'}
+    )", "lyevent merge setup"), "handler + mode tags registered");
+    events.ClickAt(200,50); events.RunEnterFrame();
+    Check(events.DoString("assert(qcalls==1)", "newest mode wins"),
+          "later group enable reactivates a button disabled at creation");
+    Check(events.DoString("e:tag{'lyevent', id='500.1.0', type='click', mode='disable'}",
+                          "disable again"), "btnstat disable");
+    events.ClickAt(200,50); events.RunEnterFrame();
+    Check(events.DoString("assert(qcalls==1)", "disable gates"),
+          "a newer specific disable gates the handler again");
+    Check(events.DoString("assert(calls==1)", "handler kept"),
+          "mode tags never replaced the sibling handler registration");
+    // A layer carrying ONLY mode tags has no handler: the click falls through
+    // to the plain advance path instead of firing a phantom event.
+    Check(events.DoString("e:tag{'lyevent', id='500.2', type='click', mode='enable'}",
+                          "mode-only layer"), "mode-only registration");
+    events.SetWaiting(true);
+    events.ClickAt(350,50); events.RunEnterFrame();
+    Check(!events.IsWaiting(), "mode-only layer click falls back to text advance");
+    // Self-contained handlers (attrs carry lua=) run their own calllua; only
+    // cursor-sync handlers (no lua=) drive the CLICK key.
+    Check(events.DoString(R"(
+        e:tag{'setonpush', key='1', ['function']='onkey'}
+        e:tag{'lyevent', id='500.3', type='click', handler='calllua',
+              ['function']='button_q', lua='adv_qsave'}
+        e:tag{'lyevent', id='500.4', type='click', handler='calllua',
+              ['function']='button_q', key='1'}
+    )", "self-contained setup"), "lua-carrying and cursor-sync buttons");
+    events.ClickAt(500,50); events.RunEnterFrame();
+    Check(events.DoString("assert(qcalls==2 and pushes==0)", "self-contained click"),
+          "self-contained handler fires without emitting the CLICK key");
+    events.ClickAt(650,50); events.RunEnterFrame();
+    Check(events.DoString("assert(qcalls==3 and pushes==1)", "cursor-sync click"),
+          "cursor-sync handler still drives the CLICK key exactly once");
     Check(events.DoString("nested={callbacks={tick=function(e) end}}", "nested callback"), "define dotted callback");
     const int stack_top = lua_gettop(events.state());
     for (int i=0; i<100; ++i) Check(events.CallGlobal("nested.callbacks.tick"), "invoke dotted callback");

@@ -1198,31 +1198,60 @@ int LuaEngine::l_lyevent(lua_State *L) {
     for (const auto &kv : attrs)
         if (kv.first == "type") ty = kv.second;
     if (ty.empty()) ty = "click";
-    auto &by_type = self->lyevents_[id];
-    if (ty != "click" && by_type.count(ty)) return 0;
-    by_type[ty] = std::move(attrs);
+    if (ty != "click" && self->lyevents_.count(id) &&
+        self->lyevents_.at(id).count(ty))
+        return 0;
+    self->StoreLyevent(id, attrs);
     return 0;
 }
 
 // Locate the effective click/drag attr table for a hit layer, walking up the
 // id hierarchy (a child layer's registrations inherit its ancestors').
+// Only registrations that carry a handler can fire; btnstat's mode-only
+// enable/disable tags never do — they only gate the handler's state. The
+// effective state comes from the NEWEST mode tag on the handler's owner or
+// its ancestors, so a later group enable (system_btnon) reactivates a
+// button that was disabled at creation, while a later specific disable
+// (mw_skip_lock) still wins.
 // When `out` is null, only reports existence (`registered` hit-test).
 bool LuaEngine::FindLayerEvent(const std::string &id, const std::string &type,
                                std::vector<std::pair<std::string, std::string>> *out) const {
+    std::string owner;
+    const LyeventEntry *entry = nullptr;
     std::string cur = id;
     while (true) {
         const auto it = lyevents_.find(cur);
         if (it != lyevents_.end()) {
             const auto t2 = it->second.find(type);
-            if (t2 != it->second.end()) {
-                if (out) *out = t2->second;
-                return true;
+            if (t2 != it->second.end() && t2->second.has_handler) {
+                entry = &t2->second;
+                owner = cur;
+                break;
             }
         }
         const size_t dot = cur.rfind('.');
         if (dot == std::string::npos) return false;
         cur = cur.substr(0, dot);
     }
+    bool enabled = entry->enabled;
+    uint64_t best = entry->mode_seq;
+    cur = owner;
+    while (true) {
+        const auto it = lyevents_.find(cur);
+        if (it != lyevents_.end()) {
+            const auto t2 = it->second.find(type);
+            if (t2 != it->second.end() && t2->second.mode_seq > best) {
+                best = t2->second.mode_seq;
+                enabled = t2->second.enabled;
+            }
+        }
+        const size_t dot = cur.rfind('.');
+        if (dot == std::string::npos) break;
+        cur = cur.substr(0, dot);
+    }
+    if (!enabled) return false;
+    if (out) *out = entry->attrs;
+    return true;
 }
 
 void LuaEngine::ClickAt(float x, float y) {
@@ -1349,11 +1378,19 @@ void LuaEngine::DispatchClick(float x, float y) {
             if (kv.first == "click" && !kv.second.empty())
                 CallEvent(kv.second, click_attrs, false);
     } else {
-        Log(kLogInfo, "click: button cursor-sync path id='" + id + "' -> onpush key 1");
+        // A handler carrying a non-empty `lua` attr is self-contained (e.g.
+        // setonpush_call reads param.lua and e:tag{calllua} itself) — firing
+        // the CLICK key on top would just page the text forward. Only the
+        // cursor-sync handlers (btn_clickex, key= without lua=) need key 1.
+        bool self_contained = false;
+        for (const auto &kv : attrs)
+            if (kv.first == "lua" && !kv.second.empty()) self_contained = true;
+        Log(kLogInfo, "click: button " + std::string(self_contained ? "handler" : "cursor-sync") +
+                      " path id='" + id + "'" + (self_contained ? "" : " -> onpush key 1"));
         for (const auto &kv : attrs)     // cursor-sync (function = btn_clickex)
             if (kv.first == "function" && !kv.second.empty())
                 CallEvent(kv.second, attrs, true);
-        FireOnPush(1);                   // CLICK key → setonpush_calllua
+        if (!self_contained) FireOnPush(1);  // CLICK key → setonpush_calllua
     }
     if (script_runner_) script_runner_->EndEvent(event);
 }
