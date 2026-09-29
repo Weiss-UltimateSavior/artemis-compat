@@ -37,11 +37,15 @@ bool LuaEngine::TagLyShader(const std::string &tag, TagAttrs &m) {
 
 bool LuaEngine::TagLyEvent(const std::string &tag, TagAttrs &m) {
     if (!compositor_ || !m.count("id")) return false;
-    // The framework emits click/rollover/rollout lyevent tags for the
-    // SAME layer id; only the click registration carries the action
-    // handler (function=btn_clickex) plus over/click attrs. Keep it
-    // and ignore the siblings so `function` isn't overwritten.
-    if (m["type"] != "click" && lyevents_.count(m["id"]))
+    // The framework emits multiple same-id lyevent tags per layer (click,
+    // rollover, rollout; drag, dragout) — registrations are keyed by event
+    // type, so siblings no longer overwrite each other and only a repeat of
+    // the SAME type is ignored (mirrors l_lyevent). Dropping distinct types
+    // lost the save/load screen's dragout handler: a thumbnail drag then
+    // never re-enabled the buttons it disabled at drag start.
+    const std::string ty = m.count("type") && !m["type"].empty() ? m["type"] : "click";
+    if (ty != "click" && lyevents_.count(m["id"]) &&
+        lyevents_.at(m["id"]).count(ty))
         return true;
     StoreLyevent(m["id"], {m.begin(), m.end()});
     return true;
