@@ -199,6 +199,21 @@ int LuaEngine::l_tag(lua_State *L) {
     const auto it = TagTable().find(tagname);
     if (it != TagTable().end() && (self->*(it->second))(tagname, m)) return 0;
     self->TagGenericSetOn(tagname, m);
+
+    // Stage 3: original-engine semantics — a tag matched by neither the
+    // framework filter (tags.*) nor the native table is invoked as a Lua
+    // global of the same name, fn(e, attrs). The framework relies on this
+    // for handlers it defines as plain globals (e.g. yesno, whose tags.yesno
+    // registration is commented out because the fallback makes it
+    // redundant). Only engages when the global is a function.
+    lua_getglobal(L, tagname.c_str());
+    if (lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        const std::vector<std::pair<std::string, std::string>> attrs(m.begin(), m.end());
+        self->CallEvent(tagname, attrs, false);
+    } else {
+        lua_pop(L, 1);
+    }
     return 0;
 }
 

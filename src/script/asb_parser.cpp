@@ -173,6 +173,21 @@ bool AsbRunner::Jump(const std::string &file, const std::string &label) {
     return true;
 }
 
+bool AsbRunner::LoadBootAnchor(const std::string &file) {
+    if (!packs_) return false;
+    std::vector<uint8_t> image;
+    if (!packs_->Read(file, image)) {
+        Log(kLogError, "asb: boot anchor not found in packs: " + file);
+        return false;
+    }
+    if (!Load(image, "")) return false;
+    current_file_ = file;
+    for (const auto &lp : script_.labels)
+        global_labels_.emplace(lp.first, file);  // insert-only, see header
+    halted_ = true;
+    return true;
+}
+
 void AsbRunner::IndexLoadedLabels() {
     if (current_file_.empty()) return;
     for (const auto &lp : script_.labels)
@@ -186,6 +201,18 @@ bool AsbRunner::ResolveGlobalLabel(const std::string &label, std::string *file) 
     return true;
 }
 
+namespace {
+bool WaitActive(const LuaEngine::WaitState &w) {
+    return w.waiting || w.timed || w.sound || w.transition ||
+           !w.video_key.empty();
+}
+struct FlagGuard {
+    bool &flag;
+    explicit FlagGuard(bool &f) : flag(f) { flag = true; }
+    ~FlagGuard() { flag = false; }
+};
+} // namespace
+
 bool AsbRunner::Call(const std::string &file, const std::string &label) {
     // A context-less empty call with no script loaded is a malformed
     // placeholder: do not push a bogus return frame. When a script is loaded,
@@ -194,15 +221,28 @@ bool AsbRunner::Call(const std::string &file, const std::string &label) {
         Log(kLogWarn, "asb: ignoring unresolved bare call (label=" + label + ")");
         return true;
     }
-    // Only record a resume point when the caller's cursor is valid; a
-    // Lua-originated estag call whose runner sits at a stale halt must not
-    // push a return into a dead region.
-    const bool event_start = event_entry_ && event_revision_ == flow_revision_;
-    // A call issued before pc_ has executed (right after a [return]) must
-    // resume at pc_ itself; otherwise resume after the current line.
-    const size_t resume = pc_pending_ ? pc_ : pc_ + 1;
-    if (!event_start && loaded_ && resume < script_.lines.size())
-        callstack_.push_back({current_file_, resume});
+    // Resume point: inside ExecuteLine the cursor still sits on the calling
+    // line (it advances after the transfer), so resume after it; a parked
+    // runner (Lua-originated call) already points at the next line, and a
+    // pc_pending_ cursor (just after [return]) must resume at pc_ itself.
+    // The resume < size guard keeps a Lua-originated estag call whose runner
+    // sits at a stale halt from pushing a return into a dead region.
+    const size_t resume = (pc_pending_ || !executing_) ? pc_ : pc_ + 1;
+    const bool push = loaded_ && resume < script_.lines.size();
+    if (push) {
+        Frame frame{current_file_, resume, halted_, lua_, {}};
+        // The caller's wait travels with the frame and is handed back when
+        // the callee returns: an event handler (menu open) suspends the
+        // click wait before calling into UI scripts, and the framework's
+        // getScriptStack()-driven return count relies on one frame per call.
+        if (lua_) frame.wait = lua_->SuspendWait();
+        if (event_wait_valid_) {
+            if (!WaitActive(frame.wait) && WaitActive(event_wait_))
+                frame.wait = event_wait_;
+            event_wait_valid_ = false;
+        }
+        callstack_.push_back(std::move(frame));
+    }
     return Jump(file, label);
 }
 
@@ -210,6 +250,8 @@ bool AsbRunner::Return() {
     if (callstack_.empty()) return false;
     const auto top = callstack_.back();
     callstack_.pop_back();
+    // A macro frame carries the attribute scope seeded at the call site.
+    if (top.macro_scope && top.lua) top.lua->PopVarScope();
     if (top.file != current_file_) {
         // KrKr2-Next: cross-file return — reload the caller's script and
         // resume at the saved line. script.asb *movie_play does
@@ -225,7 +267,7 @@ bool AsbRunner::Return() {
         current_file_ = top.file;
         Log(kLogInfo, "asb: return to " + top.file + " line " + std::to_string(top.pc));
     }
-    if (top.pc >= script_.lines.size() && !top.event) return false;
+    if (top.pc >= script_.lines.size()) return false;
     pc_ = top.pc;
     pc_pending_ = true;
     ++flow_revision_;
@@ -236,9 +278,13 @@ bool AsbRunner::Return() {
 
 uint64_t AsbRunner::BeginEvent(LuaEngine& lua) {
     if (!loaded_ || event_entry_) return 0;
-    Frame frame{current_file_, pc_, halted_, ++next_event_, &lua, lua.SuspendWait()};
-    callstack_.push_back(std::move(frame));
-    event_entry_ = next_event_;
+    event_wait_ = lua.SuspendWait();
+    event_wait_valid_ = true;
+    event_lua_ = &lua;
+    event_file_ = current_file_;
+    event_pc_ = pc_;
+    event_halted_ = halted_;
+    event_entry_ = ++next_event_;
     event_revision_ = flow_revision_;
     return event_entry_;
 }
@@ -246,6 +292,8 @@ uint64_t AsbRunner::BeginEvent(LuaEngine& lua) {
 void AsbRunner::DiscardFlow() {
     callstack_.clear();
     event_entry_=0;
+    event_wait_valid_=false;
+    event_lua_=nullptr;
     ++flow_revision_;
     loaded_=false;
     halted_=true;
@@ -253,10 +301,28 @@ void AsbRunner::DiscardFlow() {
 
 void AsbRunner::EndEvent(uint64_t token) {
     if (!token || token != event_entry_) return;
-    if (flow_revision_ == event_revision_ && !callstack_.empty() &&
-        callstack_.back().event == token) {
-        Return();
+    if (flow_revision_ == event_revision_) {
+        // Handler made no control transfer: hand the suspended wait back.
+        if (event_wait_valid_ && event_lua_) event_lua_->RestoreWait(event_wait_);
+    } else if (event_wait_valid_ && event_lua_ && !event_halted_) {
+        // The handler transferred control without a call adopting the wait
+        // (plain jump to a menu script): the interrupted position becomes a
+        // single return frame so the target's [return] lands back here.
+        // Exactly one frame is pushed, keeping the framework's
+        // getScriptStack() pairing (story below menu) intact.
+        //
+        // A position already halted at [stop] (event_halted_) has no
+        // continuation: the yesno dialog framework parks dialog_open at
+        // [stop], then jumps from the click handler to dialog_close and
+        // expects dialog_close's [return] to land at the real caller below
+        // (adv_title's resume line). Preserving the dead frame would strand
+        // that [return] on the [stop] and freeze the runner.
+        callstack_.push_back({event_file_, event_pc_, event_halted_,
+                              event_lua_, event_wait_});
     }
+    // A call-transferred handler already adopted the wait into its frame.
+    event_wait_valid_ = false;
+    event_lua_ = nullptr;
     event_entry_ = 0;
 }
 
@@ -270,6 +336,8 @@ std::vector<std::string> AsbRunner::StackFiles() const {
 void AsbRunner::ShiftWaitDeadlines(LuaEngine& lua, std::chrono::steady_clock::duration pause) {
     for (auto& frame : callstack_)
         if (frame.lua == &lua && frame.wait.timed) frame.wait.deadline += pause;
+    if (event_wait_valid_ && event_lua_ == &lua && event_wait_.timed)
+        event_wait_.deadline += pause;
 }
 
 bool AsbRunner::FindLabel(const std::string &label, size_t *pc) {
@@ -342,6 +410,7 @@ bool EstimateTrue(LuaEngine &lua, const std::string &estimate) {
 
 bool AsbRunner::ExecuteLine(LuaEngine& lua) {
     if (!loaded_ || halted_ || pc_ >= script_.lines.size()) { halted_ = true; return false; }
+    FlagGuard exec_guard(executing_);
     pc_pending_ = false;
     const uint64_t before = flow_revision_;
     const AsbLine line = Current(); // callbacks can replace script_ in this call
@@ -358,7 +427,18 @@ bool AsbRunner::ExecuteLine(LuaEngine& lua) {
     if (line.command == "\x02LUA") {
         if (!lua_chunks_loaded_) lua.DoString(attr("code"), "asb:lua");
     }
-    else if (line.command == "calllua") lua.CallGlobal(attr("function"));
+    else if (line.command == "calllua") {
+        // Framework convention fn(e, attrs) — the same shape TagCallLua uses
+        // for e:tag{"calllua"}: the attribute table is param 2. load_start
+        // reads param.file, load_exec reads param["0"] for the valueless
+        // `suspend` marker. Attribute values may reference variables
+        // (file="$t.file"), so resolve them like EstimateTrue does.
+        std::vector<std::pair<std::string, std::string>> params;
+        params.reserve(line.attrs.size());
+        for (const auto &kv : line.attrs)
+            params.emplace_back(kv.first, lua.ResolveValue(kv.second));
+        lua.CallEvent(attr("function"), params, false);
+    }
     else if (line.command == "jump" || line.command == "call") {
         const std::string file = attr("file").empty() ? current_file_ : attr("file");
         const bool ok = line.command == "call" ? Call(file, attr("label")) : Jump(file, attr("label"));
@@ -393,6 +473,28 @@ bool AsbRunner::ExecuteLine(LuaEngine& lua) {
     } else if (line.command == "else") {
         // fall through (reached only when no earlier branch was taken)
     } else if (line.command != "stop") {
+        // Text .iet macro dispatch (KAG semantics — a macro overrides the
+        // built-in tag of the same name): a tag matching a label of the
+        // current script, or of any script loaded so far (macro.iet & co.
+        // are loaded at boot), is a subroutine call. The tag's attributes
+        // seed a variable scope for the macro body ([終端 time=1000] reads
+        // $time; [yesno file=title] forwards $file to its calllua), popped
+        // when the macro frame returns.
+        size_t macro_pc = 0;
+        std::string macro_file;
+        if (FindLabel(line.command, &macro_pc) ||
+            ResolveGlobalLabel(line.command, &macro_file)) {
+            if (macro_file.empty()) macro_file = current_file_;
+            lua.PushVarScope(line.attrs);
+            const size_t depth = callstack_.size();
+            if (!Call(macro_file, line.command)) {
+                lua.PopVarScope();
+                Halt();
+                return false;
+            }
+            if (callstack_.size() > depth) callstack_.back().macro_scope = true;
+            return true;
+        }
         lua.DispatchTag(line.command, line.attrs);
     }
     if (before == flow_revision_ && !halted_) Advance();
@@ -414,8 +516,66 @@ void ParseIetBracket(const std::string &inner, AsbLine *out) {
 bool ParseIetScript(const std::string &text, AsbScript *out) {
     out->lines.clear();
     out->labels.clear();
+
+    // Text .iet conditionals ([if]/[elseif]/[else]/[/if]) compile to the same
+    // \x0bindex metadata the compiled-ASB path consumes: each conditional
+    // header carries the line index to jump to when its estimate is false
+    // (the next sibling header, or past the group), and each taken branch
+    // ends with a synthetic \x0bgoto past the group. Without this the branch
+    // bodies used to run unconditionally.
+    struct IfCtx {
+        bool has_pending = false;  // header awaiting its false target
+        size_t pending = 0;
+        std::vector<size_t> gotos; // synthetic gotos awaiting the group end
+    };
+    std::vector<IfCtx> ifs;
+    auto set_index = [&](size_t line_no, size_t target) {
+        out->lines[line_no].attrs.emplace_back(
+            std::string(kBranchPrefix) + "index", std::to_string(target));
+    };
+    auto emit = [&](AsbLine l) {
+        if (l.command == "if") {
+            IfCtx ctx;
+            ctx.has_pending = true;
+            ctx.pending = out->lines.size();
+            ifs.push_back(ctx);
+            out->lines.push_back(std::move(l));
+        } else if (l.command == "elseif" || l.command == "else") {
+            if (!ifs.empty()) {
+                IfCtx &ctx = ifs.back();
+                // End the previous branch body: when its header's condition
+                // held, skip the remaining branches.
+                AsbLine g;
+                g.command = std::string(kBranchPrefix) + "goto";
+                ctx.gotos.push_back(out->lines.size());
+                out->lines.push_back(std::move(g));
+                // The previous header's false branch starts at this line.
+                if (ctx.has_pending) set_index(ctx.pending, out->lines.size());
+                if (l.command == "elseif") {
+                    ctx.has_pending = true;
+                    ctx.pending = out->lines.size();
+                } else {
+                    ctx.has_pending = false;
+                }
+            }
+            out->lines.push_back(std::move(l));
+        } else if (l.command == "/if") {
+            if (!ifs.empty()) {
+                IfCtx &ctx = ifs.back();
+                const size_t end = out->lines.size();
+                if (ctx.has_pending) set_index(ctx.pending, end);
+                for (const size_t g : ctx.gotos) set_index(g, end);
+                ifs.pop_back();
+            }
+            // [/if] itself emits no line.
+        } else {
+            out->lines.push_back(std::move(l));
+        }
+    };
+
     size_t pos = 0;
     bool in_lua = false;
+    bool in_block_comment = false;
     std::string lua_code;
     while (pos <= text.size()) {
         size_t eol = text.find('\n', pos);
@@ -430,12 +590,22 @@ bool ParseIetScript(const std::string &text, AsbScript *out) {
                 AsbLine l;
                 l.command = "\x02LUA";
                 l.attrs.emplace_back("code", lua_code);
-                out->lines.push_back(std::move(l));
+                emit(std::move(l));
                 in_lua = false;
             } else {
                 lua_code += line;
                 lua_code += '\n';
             }
+            continue;
+        }
+        // /* */ block comment (macro.iet comments out its deprecated macros
+        // this way — including a second, dead *終端 definition).
+        if (in_block_comment) {
+            if (line.find("*/") != std::string::npos) in_block_comment = false;
+            continue;
+        }
+        if (line.rfind("/*", 0) == 0) {
+            if (line.find("*/") == std::string::npos) in_block_comment = true;
             continue;
         }
         // comment / blank
@@ -450,17 +620,57 @@ bool ParseIetScript(const std::string &text, AsbScript *out) {
             continue;
         }
         if (line == "[lua]") { in_lua = true; lua_code.clear(); continue; }
-        if (line.size() >= 2 && line.front() == '[' && line.back() == ']') {
-            AsbLine l;
-            ParseIetBracket(line.substr(1, line.size() - 2), &l);
-            out->lines.push_back(std::move(l));
-            continue;
+        if (line.size() >= 2 && line.front() == '[') {
+            // Split the physical line into its bracket groups: text .iet
+            // scripts put a whole one-line branch on a single line
+            // ([if estimate=…][var …][/if]), and tolerate a trailing `//`
+            // comment after the last group (system/system.iet adv_save ends
+            // branches with `[ui_return]	// uiに戻る` — treating that as
+            // scenario text silently drops the tag).
+            size_t j = 0;
+            std::vector<std::string> groups;
+            bool balanced = true;
+            while (j < line.size() && line[j] == '[') {
+                size_t depth = 0, k = j;
+                bool in_quote = false;
+                for (; k < line.size(); ++k) {
+                    const char c = line[k];
+                    if (in_quote) { if (c == '"') in_quote = false; continue; }
+                    if (c == '"') { in_quote = true; continue; }
+                    if (c == '[') ++depth;
+                    else if (c == ']') { --depth; if (depth == 0) { ++k; break; } }
+                }
+                if (depth != 0) { balanced = false; break; }
+                groups.push_back(line.substr(j + 1, k - j - 2));
+                j = k;
+                while (j < line.size() && (line[j] == ' ' || line[j] == '\t')) ++j;
+            }
+            std::string rest = line.substr(j);
+            const size_t a = rest.find_first_not_of(" \t");
+            rest = (a == std::string::npos) ? std::string() : rest.substr(a);
+            if (balanced && !groups.empty() &&
+                (rest.empty() || rest.rfind("//", 0) == 0)) {
+                for (const auto &g : groups) {
+                    AsbLine l;
+                    ParseIetBracket(g, &l);
+                    emit(std::move(l));
+                }
+                continue;
+            }
         }
         // scenario text line (message layer, M3 next batch)
         AsbLine l;
         l.command = "\x01TEXT";
         l.attrs.emplace_back("text", line);
-        out->lines.push_back(std::move(l));
+        emit(std::move(l));
+    }
+    // Unclosed conditional groups jump to the end of the script.
+    while (!ifs.empty()) {
+        IfCtx &ctx = ifs.back();
+        const size_t end = out->lines.size();
+        if (ctx.has_pending) set_index(ctx.pending, end);
+        for (const size_t g : ctx.gotos) set_index(g, end);
+        ifs.pop_back();
     }
     return !out->lines.empty();
 }

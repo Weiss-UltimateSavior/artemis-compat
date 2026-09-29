@@ -125,7 +125,14 @@ void IetRunner::ExecBracket(const std::string &inner) {
         for (const auto &kv : attrs) {
             if (kv.first == "function") {
                 Log(kLogInfo, "iet calllua: " + kv.second);
-                if (!lua_->CallGlobal(kv.second))
+                // Framework convention fn(e, attrs): pass the attribute
+                // table (with $vars resolved) as param 2 — same as the
+                // AsbRunner calllua path and TagCallLua.
+                std::vector<std::pair<std::string, std::string>> params;
+                params.reserve(attrs.size());
+                for (const auto &attr : attrs)
+                    params.emplace_back(attr.first, lua_->ResolveValue(attr.second));
+                if (!lua_->CallEvent(kv.second, params, false))
                     Log(kLogError, "iet calllua failed: " + kv.second);
                 return;
             }

@@ -796,6 +796,39 @@ std::string LuaEngine::ResolveValue(const std::string& value) const {
     return "0";
 }
 
+void LuaEngine::PushVarScope(
+    const std::vector<std::pair<std::string, std::string>> &attrs) {
+    // Resolve every value before seeding: a macro argument may reference an
+    // outer variable that one of the other arguments shadows.
+    std::vector<std::pair<std::string, std::string>> resolved;
+    resolved.reserve(attrs.size());
+    for (const auto &kv : attrs)
+        resolved.emplace_back(kv.first, ResolveValue(kv.second));
+    std::vector<std::pair<std::string, std::pair<bool, std::string>>> saved;
+    saved.reserve(resolved.size());
+    for (const auto &kv : resolved) {
+        if (kv.first.empty() || kv.first.front() == '\x0b') continue;
+        const auto it = vars_.find(kv.first);
+        if (it == vars_.end())
+            saved.emplace_back(kv.first, std::make_pair(false, std::string()));
+        else
+            saved.emplace_back(kv.first, std::make_pair(true, it->second));
+        vars_[kv.first] = kv.second;
+    }
+    var_scopes_.push_back(std::move(saved));
+}
+
+void LuaEngine::PopVarScope() {
+    if (var_scopes_.empty()) return;
+    for (const auto &kv : var_scopes_.back()) {
+        if (kv.second.first) vars_[kv.first] = kv.second.second;
+        else vars_.erase(kv.first);
+    }
+    var_scopes_.pop_back();
+}
+
+void LuaEngine::ClearVarScopes() { var_scopes_.clear(); }
+
 int LuaEngine::l_var(lua_State *L) {
     LuaEngine *self = Self(L);
     const char *name = luaL_checkstring(L, 2);
@@ -1470,7 +1503,8 @@ void LuaEngine::DragMove(float x, float y) {
     const auto info = compositor_->GetLayerInfo(drag_id_);
     if (!info.found) { EndDrag(); return; }
     float dx, dy;
-    if (!compositor_->ParentDelta(drag_id_,x-drag_origin_x_,y-drag_origin_y_,&dx,&dy)) return;
+    if (!compositor_->ParentDelta(drag_id_,x-drag_origin_x_,y-drag_origin_y_,&dx,&dy))
+        return;
     float nx = drag_off_x_ + dx;
     float ny = drag_off_y_ + dy;
     if (info.has_dragarea) {
@@ -1713,6 +1747,22 @@ bool LuaEngine::IsWaiting() {
         const double ms = delay == vars_.end() ? 1000 : std::atof(delay->second.c_str());
         if (auto_timer_.Ready(NowMs(), ms, blocked)) SetWaiting(false);
     }
+    // A click wait announced mid-print keeps the framework's flg.waitflag
+    // set (keyClickStart sampled {textTween}); the tween finishing is not a
+    // wait transition, so without this the reason would stick for the whole
+    // wait and block every menu button. Track the tween while an announced
+    // wait persists and re-announce OUT+IN when it drains — keyClickStart
+    // re-samples an empty reason and clears waitflag. Sampling every frame
+    // (instead of only at IN) also covers a tween that STARTS mid-wait,
+    // e.g. the onLoad restorer re-printing into the restored click wait.
+    if (waiting_ && click_wait_announced_ && !announcing_ && compositor_) {
+        const bool pending = compositor_->PendingTextMs(NowMs()) > 0;
+        if (wait_reason_pending_ && !pending) {
+            AnnounceWaitState(false);
+            AnnounceWaitState(true);
+        }
+        wait_reason_pending_ = pending;
+    }
     return waiting_;
 }
 
@@ -1846,6 +1896,9 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
     videos_.clear();emotes_.clear();if(audio_)audio_->StopAll();if(sounds_)sounds_->Reset();
     onsoundfinish_.clear();pending_click_=false;drag_id_.clear();lyevents_.clear();
     if(script_runner_)script_runner_->DiscardFlow();
+    // Macro scopes belong to the discarded flow: the frames that would pop
+    // them are gone.
+    ClearVarScopes();
     advance(LoadPhase::SnapshotScene);
     if(compositor_) {
         const int w=compositor_->StageWidth(),h=compositor_->StageHeight();

@@ -160,6 +160,9 @@ bool EngineContext::BootFramework(bool drain_boot_queue) {
         Log(kLogError, "engine: system/first.iet missing; boot aborted");
         return false;
     }
+    // Park the script runner on the boot script so bare-label tags queued by
+    // the boot chain resolve in first.iet (see AsbRunner::LoadBootAnchor).
+    runner_->LoadBootAnchor("system/first.iet");
     // CLI harness order: drain the boot jumps before the frame-loop handlers
     // exist (the estag03 "call" is user-triggered and is not queued here).
     if (drain_boot_queue) {

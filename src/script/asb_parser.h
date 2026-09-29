@@ -73,6 +73,15 @@ public:
     // stores these directly rather than source labels).
     void GotoIndex(size_t index);
     void Halt() { halted_ = true; }
+    // Anchor the runner on the boot script (system/first.iet) after the boot
+    // interpreter ran its *top: the original engine keeps the runner parked
+    // in first.iet, so bare-label tags queued during boot (initLua2's
+    // `jump label=game_start`) resolve there — not in the macro files the
+    // boot macroadds load. The runner is left halted (first.iet's [stop]);
+    // anchor labels fill the cross-file index without overwriting the macro
+    // registrations (game_start exists in both first.iet and macro2.iet —
+    // the macro file must keep winning bare lookups from other contexts).
+    bool LoadBootAnchor(const std::string &file);
     // A load replaces the old scenario and any suspended menu/event frames.
     void DiscardFlow();
     // External events may yield into native script commands. A handler with
@@ -112,11 +121,33 @@ private:
         std::string file;
         size_t pc;
         bool halted = false;
-        uint64_t event = 0;
         LuaEngine* lua = nullptr;
         LuaEngine::WaitState wait{};
+        // Frame pushed by a text .iet macro call ([終端 time=…]): the macro's
+        // attribute scope is popped when this frame returns.
+        bool macro_scope = false;
     };
     std::vector<Frame> callstack_;
+    // True while ExecuteLine runs a line: the cursor still sits on the
+    // calling line (it advances after the transfer), so Call must resume
+    // after it. A parked runner (Lua-originated call) already points at the
+    // next line and must resume at pc_ itself.
+    bool executing_ = false;
+    // An event handler's suspended wait is kept beside the stack, not on it:
+    // a stack frame here would leak into the framework's getScriptStack()
+    // pairing when the handler transfers control (menu open → call_ui),
+    // corrupting its return count and stranding the story cursor.
+    LuaEngine *event_lua_ = nullptr;
+    LuaEngine::WaitState event_wait_{};
+    bool event_wait_valid_ = false;
+    // Interrupted position recorded at BeginEvent: when the handler transfers
+    // control with a plain jump (no call adopts the wait), EndEvent turns it
+    // into a single return frame so the target's [return] lands back here.
+    // A position already halted at [stop] is exempt — it has no continuation,
+    // and keeping it would strand the target's [return] on the dead frame.
+    std::string event_file_;
+    size_t event_pc_ = 0;
+    bool event_halted_ = false;
     // Bare label -> script file, indexed from every loaded script. Later loads
     // override earlier ones (macro2.iet redefines game_start, …).
     std::map<std::string, std::string> global_labels_;
