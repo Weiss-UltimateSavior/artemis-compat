@@ -1,4 +1,5 @@
 #include "core/engine_context.h"
+#include "render/compositor.h"
 #include "script/lua_engine.h"
 #include "pack/pack_manager.h"
 #include "pack/sha1.h"
@@ -86,6 +87,13 @@ int main() {
     Check(ctx.Open(a.string(), "android"), "open default layout");
     Check(ctx.saveDir() == a.string(), "default saves next to pack");
     Check(ctx.stageW() == 640 && ctx.stageH() == 480, "read initial stage");
+    // Android frame-loop regression: a surface change before the first
+    // Start() releases stale compositor GL state. The compositor must exist
+    // as soon as the pack chain is open and releasing it before Start() must
+    // be a safe no-op (it owns no GL objects yet).
+    Check(ctx.Opened() && !ctx.Started(), "open keeps the session unstarted");
+    ctx.compositor().ReleaseGl();
+    ctx.compositor().ReleaseGl();
     Check(ctx.Start(false) && ctx.BootFramework(), "boot initial session");
     Check(ctx.lua().SaveDir() == a.string(), "Lua receives default save directory");
     auto *audio = &ctx.audio();

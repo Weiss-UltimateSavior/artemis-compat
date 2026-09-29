@@ -108,6 +108,16 @@ bool EngineContext::Open(const std::string &data_dir, const std::string &os_id,
         Shutdown();
         return false;
     }
+    // The compositor object is part of the opened graph; only its GL state is
+    // deferred to Start(true). Hosts release stale GL state on a
+    // window/surface change, and the Android frame loop does that before the
+    // first Start() (pre-EngineContext hosts owned a live compositor from
+    // thread start). Without this, that release dereferences a null
+    // unique_ptr.
+    if (!compositor_) {
+        compositor_ = std::make_unique<Compositor>();
+        compositor_->SetPackManager(packs_.get());
+    }
     std::vector<uint8_t> ini_bytes;
     if (packs_->Read("system.ini", ini_bytes))
         ini_.Parse(std::string(ini_bytes.begin(), ini_bytes.end()));

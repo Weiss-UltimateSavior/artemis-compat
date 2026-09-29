@@ -39,8 +39,8 @@ public:
 
     // Phase 1 (no GL): resolve the pack chain (a directory holding root.pfs /
     // *.pfs, or a direct .pfs path), parse system.ini, create + initialize
-    // audio, and read the stage size. Idempotent: a second call keeps the
-    // already-open chain until Shutdown().
+    // audio, create the compositor object, and read the stage size. Idempotent:
+    // a second call keeps the already-open chain until Shutdown().
     bool Open(const std::string &data_dir, const std::string &os_id,
               const std::vector<uint8_t> &explicit_key = {});
 
@@ -53,8 +53,10 @@ public:
               const PackManager::FileProvider &provider);
 
     // Phase 2 (GL context must be current when `with_compositor`): compositor
-    // Init + Lua session. Safe to call again after ResetSession() (compositor
-    // GL is released and rebuilt, matching the old per-boot sequence).
+    // GL Init + Lua session. Safe to call again after ResetSession() (compositor
+    // GL is released and rebuilt, matching the old per-boot sequence). The
+    // compositor object itself exists from Open(); this phase only builds its
+    // GL resources.
     // `with_compositor=false` is the headless assembly used by the JNI
     // DebugBridge bootstrap, which has no GL context.
     bool Start(bool with_compositor = true);
