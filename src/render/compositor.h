@@ -65,6 +65,9 @@ struct Layer {
     std::string text;
     std::vector<TextGlyph> glyphs;
     std::vector<TextTween> text_in;
+    // End-of-text pen in texture space (where the next character would go),
+    // recorded by SetText. [glyph homing=1] parks the click-wait glyph here.
+    float text_pen_x = 0, text_pen_y = 0;
     // Optional warped triangle list (interleaved x,y,u,v in layer-local
     // pixels); when non-empty the layer is drawn as triangles instead of a quad
     // (E-mote per-icon mesh warp).
@@ -107,6 +110,12 @@ public:
                  const std::vector<TextRuby>& ruby = {});
     void SetTextTween(const std::string& id, const std::map<std::string, std::string>& attrs);
     void SetMessageLayered(const std::string& id, bool layered);
+    // [glyph homing=1] — move the glyph layer so its origin sits at the
+    // end-of-text pen of the message layer, even when the two live under
+    // different parent chains (e.g. text on "adv", glyph at "1.90" under
+    // the window group "1"). Materializes a texture-less glyph holder when
+    // the script has not created one yet. Returns false without a text layer.
+    bool HomeLayerToTextPen(const std::string& text_id, const std::string& glyph_id);
     double PendingTextMs(double now_ms) const;
     bool FinishText(double now_ms);
     // Override a layer's geometry with a warped triangle list (x,y,u,v per

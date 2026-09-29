@@ -491,6 +491,7 @@ void EngineThreadMain(ANativeActivity *activity) {
                 int touch_count = 0;
                 bool tapped = false;
                 bool was_dragging = false;
+                bool end_drag = false;
                 float tap_x = 0, tap_y = 0;
                 for (const auto &ev : batch) {
                     if (ev.is_key) {
@@ -513,7 +514,7 @@ void EngineThreadMain(ANativeActivity *activity) {
                             lua.PushKeyUp(1);
                             touch_count = 0;
                             was_dragging = lua.DragMoved();
-                            lua.EndDrag();
+                            end_drag = true;
                             if (!was_dragging) {   // a clean tap, not a drag
                                 tapped = true;
                                 tap_x = ev.x;
@@ -530,6 +531,13 @@ void EngineThreadMain(ANativeActivity *activity) {
                 lua.RunEnterFrame();
                 // input-dispatched calllua may enqueue (estag call etc.)
                 drain();
+                // dragout fires after the release frame's vsync pass: the
+                // save/load screen's longtap watch converts a non-dragged
+                // release into ENTER (key 146 → save_click → save_check)
+                // during vsync, and the framework's dragout handler clears
+                // that watch — the original engine's event order lets the
+                // conversion win, so a tap on an occupied slot loads.
+                if (end_drag) lua.EndDrag();
             }
             // 2) native script execution (compiled .asb tag stack)
             if (runner.Loaded() && !runner.Halted() && !lua.IsWaiting()) {

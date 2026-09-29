@@ -351,6 +351,42 @@ int main() {
     Check(c.Layers().back().glyphs[1].y>c.Layers().back().glyphs[0].y,
           "explicit newline overrides automatic line-break rules");
     c.DeleteLayer("2");
+    // [glyph homing=1] — the click-wait glyph layer parks at the end-of-text
+    // pen and follows it onto the last line as the page grows.
+    const auto find_layer=[&](const std::string& id)->const artc::Layer* {
+        for (const auto& l : c.Layers()) if (l.id==id) return &l;
+        return nullptr;
+    };
+    Check(c.SetText("2","AAAA",10,0xffffff,100),"layout glyph-homing fixture");
+    Check(c.HomeLayerToTextPen("2","1.90"),"home glyph layer to the text end");
+    Check(find_layer("1.90") && find_layer("1.90")->x==4*advance && find_layer("1.90")->y==0,
+          "homing places the glyph at the end of the single line");
+    Check(c.SetText("2","AA\nAA",10,0xffffff,100),"grow the homing fixture page");
+    Check(c.HomeLayerToTextPen("2","1.90"),"rehome after the page grows");
+    Check(find_layer("1.90")->x==2*advance &&
+          find_layer("1.90")->y==find_layer("2")->glyphs[2].y-find_layer("2")->glyphs[0].y,
+          "homing follows the pen onto the last line");
+    Check(!c.HomeLayerToTextPen("missing","1.90"),"homing needs the text layer");
+    c.DeleteLayer("2"); c.DeleteLayer("1.90");
+    Check(messages.DoString(R"(
+        e:tag{'chgmsg',id='adv'}
+        e:tag{'font',face='font.ttf',size=10,width=100}
+        e:tag{'glyph'}
+        e:tag{'glyph',layer='1.90',homing='1'}
+        e:tag{'print',data='AAAA'}
+        e:tag{'/chgmsg'}
+    )", "glyph homing script"), "glyph tag homes through the script path");
+    Check(find_layer("1.90") && find_layer("1.90")->x==4*advance && find_layer("1.90")->y==0,
+          "printing homes the glyph layer to the scenario text end");
+    Check(messages.DoString("e:tag{'chgmsg',id='adv'}; e:tag{'rp'}; e:tag{'/chgmsg'}",
+        "clear scripted page"), "rp rehomes the glyph to the text origin");
+    Check(find_layer("1.90")->x==0 && find_layer("1.90")->y==0,
+          "cleared page returns the glyph to the pen origin");
+    Check(messages.DoString("e:tag{'chgmsg',id='adv'}; e:tag{'glyph',layer='1.91',homing='0'}; "
+        "e:tag{'print',data='AAAA'}; e:tag{'/chgmsg'}", "fixed glyph"),
+        "homing=0 keeps the scripted glyph position");
+    Check(!find_layer("1.91"), "homing=0 never materializes or moves the glyph layer");
+    c.DeleteLayer("adv"); c.DeleteLayer("1.90");
     c.SetProps("3",{{"left","4"},{"top","3"},{"xscale","200"},{"yscale","200"}});
     Check(c.LoadImage("3.1","small.tga"),"load first expression");
     c.SetProps("3.1",{{"left","5"},{"top","4"}});

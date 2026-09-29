@@ -796,6 +796,39 @@ std::string LuaEngine::ResolveValue(const std::string& value) const {
     return "0";
 }
 
+void LuaEngine::PushVarScope(
+    const std::vector<std::pair<std::string, std::string>> &attrs) {
+    // Resolve every value before seeding: a macro argument may reference an
+    // outer variable that one of the other arguments shadows.
+    std::vector<std::pair<std::string, std::string>> resolved;
+    resolved.reserve(attrs.size());
+    for (const auto &kv : attrs)
+        resolved.emplace_back(kv.first, ResolveValue(kv.second));
+    std::vector<std::pair<std::string, std::pair<bool, std::string>>> saved;
+    saved.reserve(resolved.size());
+    for (const auto &kv : resolved) {
+        if (kv.first.empty() || kv.first.front() == '\x0b') continue;
+        const auto it = vars_.find(kv.first);
+        if (it == vars_.end())
+            saved.emplace_back(kv.first, std::make_pair(false, std::string()));
+        else
+            saved.emplace_back(kv.first, std::make_pair(true, it->second));
+        vars_[kv.first] = kv.second;
+    }
+    var_scopes_.push_back(std::move(saved));
+}
+
+void LuaEngine::PopVarScope() {
+    if (var_scopes_.empty()) return;
+    for (const auto &kv : var_scopes_.back()) {
+        if (kv.second.first) vars_[kv.first] = kv.second.second;
+        else vars_.erase(kv.first);
+    }
+    var_scopes_.pop_back();
+}
+
+void LuaEngine::ClearVarScopes() { var_scopes_.clear(); }
+
 int LuaEngine::l_var(lua_State *L) {
     LuaEngine *self = Self(L);
     const char *name = luaL_checkstring(L, 2);
@@ -1198,31 +1231,60 @@ int LuaEngine::l_lyevent(lua_State *L) {
     for (const auto &kv : attrs)
         if (kv.first == "type") ty = kv.second;
     if (ty.empty()) ty = "click";
-    auto &by_type = self->lyevents_[id];
-    if (ty != "click" && by_type.count(ty)) return 0;
-    by_type[ty] = std::move(attrs);
+    if (ty != "click" && self->lyevents_.count(id) &&
+        self->lyevents_.at(id).count(ty))
+        return 0;
+    self->StoreLyevent(id, attrs);
     return 0;
 }
 
 // Locate the effective click/drag attr table for a hit layer, walking up the
 // id hierarchy (a child layer's registrations inherit its ancestors').
+// Only registrations that carry a handler can fire; btnstat's mode-only
+// enable/disable tags never do — they only gate the handler's state. The
+// effective state comes from the NEWEST mode tag on the handler's owner or
+// its ancestors, so a later group enable (system_btnon) reactivates a
+// button that was disabled at creation, while a later specific disable
+// (mw_skip_lock) still wins.
 // When `out` is null, only reports existence (`registered` hit-test).
 bool LuaEngine::FindLayerEvent(const std::string &id, const std::string &type,
                                std::vector<std::pair<std::string, std::string>> *out) const {
+    std::string owner;
+    const LyeventEntry *entry = nullptr;
     std::string cur = id;
     while (true) {
         const auto it = lyevents_.find(cur);
         if (it != lyevents_.end()) {
             const auto t2 = it->second.find(type);
-            if (t2 != it->second.end()) {
-                if (out) *out = t2->second;
-                return true;
+            if (t2 != it->second.end() && t2->second.has_handler) {
+                entry = &t2->second;
+                owner = cur;
+                break;
             }
         }
         const size_t dot = cur.rfind('.');
         if (dot == std::string::npos) return false;
         cur = cur.substr(0, dot);
     }
+    bool enabled = entry->enabled;
+    uint64_t best = entry->mode_seq;
+    cur = owner;
+    while (true) {
+        const auto it = lyevents_.find(cur);
+        if (it != lyevents_.end()) {
+            const auto t2 = it->second.find(type);
+            if (t2 != it->second.end() && t2->second.mode_seq > best) {
+                best = t2->second.mode_seq;
+                enabled = t2->second.enabled;
+            }
+        }
+        const size_t dot = cur.rfind('.');
+        if (dot == std::string::npos) break;
+        cur = cur.substr(0, dot);
+    }
+    if (!enabled) return false;
+    if (out) *out = entry->attrs;
+    return true;
 }
 
 void LuaEngine::ClickAt(float x, float y) {
@@ -1349,11 +1411,19 @@ void LuaEngine::DispatchClick(float x, float y) {
             if (kv.first == "click" && !kv.second.empty())
                 CallEvent(kv.second, click_attrs, false);
     } else {
-        Log(kLogInfo, "click: button cursor-sync path id='" + id + "' -> onpush key 1");
+        // A handler carrying a non-empty `lua` attr is self-contained (e.g.
+        // setonpush_call reads param.lua and e:tag{calllua} itself) — firing
+        // the CLICK key on top would just page the text forward. Only the
+        // cursor-sync handlers (btn_clickex, key= without lua=) need key 1.
+        bool self_contained = false;
+        for (const auto &kv : attrs)
+            if (kv.first == "lua" && !kv.second.empty()) self_contained = true;
+        Log(kLogInfo, "click: button " + std::string(self_contained ? "handler" : "cursor-sync") +
+                      " path id='" + id + "'" + (self_contained ? "" : " -> onpush key 1"));
         for (const auto &kv : attrs)     // cursor-sync (function = btn_clickex)
             if (kv.first == "function" && !kv.second.empty())
                 CallEvent(kv.second, attrs, true);
-        FireOnPush(1);                   // CLICK key → setonpush_calllua
+        if (!self_contained) FireOnPush(1);  // CLICK key → setonpush_calllua
     }
     if (script_runner_) script_runner_->EndEvent(event);
 }
@@ -1433,7 +1503,8 @@ void LuaEngine::DragMove(float x, float y) {
     const auto info = compositor_->GetLayerInfo(drag_id_);
     if (!info.found) { EndDrag(); return; }
     float dx, dy;
-    if (!compositor_->ParentDelta(drag_id_,x-drag_origin_x_,y-drag_origin_y_,&dx,&dy)) return;
+    if (!compositor_->ParentDelta(drag_id_,x-drag_origin_x_,y-drag_origin_y_,&dx,&dy))
+        return;
     float nx = drag_off_x_ + dx;
     float ny = drag_off_y_ + dy;
     if (info.has_dragarea) {
@@ -1676,6 +1747,22 @@ bool LuaEngine::IsWaiting() {
         const double ms = delay == vars_.end() ? 1000 : std::atof(delay->second.c_str());
         if (auto_timer_.Ready(NowMs(), ms, blocked)) SetWaiting(false);
     }
+    // A click wait announced mid-print keeps the framework's flg.waitflag
+    // set (keyClickStart sampled {textTween}); the tween finishing is not a
+    // wait transition, so without this the reason would stick for the whole
+    // wait and block every menu button. Track the tween while an announced
+    // wait persists and re-announce OUT+IN when it drains — keyClickStart
+    // re-samples an empty reason and clears waitflag. Sampling every frame
+    // (instead of only at IN) also covers a tween that STARTS mid-wait,
+    // e.g. the onLoad restorer re-printing into the restored click wait.
+    if (waiting_ && click_wait_announced_ && !announcing_ && compositor_) {
+        const bool pending = compositor_->PendingTextMs(NowMs()) > 0;
+        if (wait_reason_pending_ && !pending) {
+            AnnounceWaitState(false);
+            AnnounceWaitState(true);
+        }
+        wait_reason_pending_ = pending;
+    }
     return waiting_;
 }
 
@@ -1809,6 +1896,9 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
     videos_.clear();emotes_.clear();if(audio_)audio_->StopAll();if(sounds_)sounds_->Reset();
     onsoundfinish_.clear();pending_click_=false;drag_id_.clear();lyevents_.clear();
     if(script_runner_)script_runner_->DiscardFlow();
+    // Macro scopes belong to the discarded flow: the frames that would pop
+    // them are gone.
+    ClearVarScopes();
     advance(LoadPhase::SnapshotScene);
     if(compositor_) {
         const int w=compositor_->StageWidth(),h=compositor_->StageHeight();

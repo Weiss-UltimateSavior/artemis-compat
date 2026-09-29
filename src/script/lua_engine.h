@@ -56,6 +56,12 @@ public:
     // (first.iet: [calllua function="system_initlua"] receives the engine).
     bool CallGlobal(const std::string &fn);
     bool CallGlobalInternal(const std::string &fn, bool quiet);
+    // Call a global Lua function as fn(e, params) — the framework calllua
+    // convention. Used by TagCallLua and by the script runners' native
+    // [calllua function=... ...] lines (load_start reads param.file).
+    bool CallEvent(const std::string &fn,
+                   const std::vector<std::pair<std::string, std::string>> &param,
+                   bool quiet);
     // Dispatch an engine tag through the e:tag bridge (iet [tag ...] lines).
     // `apply_filter` is false for engine-internal queued tags (eqwait drains)
     // so the framework's tag filter cannot re-enqueue itself.
@@ -63,6 +69,16 @@ public:
                      const std::vector<std::pair<std::string, std::string>> &attrs,
                      bool apply_filter = true);
     std::string ResolveValue(const std::string& value) const;
+
+    // Macro variable scopes (text .iet KAG-style macros): the script runner
+    // seeds a macro's tag attributes as script variables on entry
+    // ([終端 time=1000] reads $time inside the macro body) and the outer
+    // values are restored when the macro returns. Values are ResolveValue'd
+    // up front so an argument may reference an outer variable another
+    // argument shadows. Scopes nest with the macro call stack.
+    void PushVarScope(const std::vector<std::pair<std::string, std::string>> &attrs);
+    void PopVarScope();
+    void ClearVarScopes();
 
     // ---- input & frame hooks (M2.2) ----
     // The engine feeds normalized input (key ids per official key_id spec:
@@ -108,12 +124,38 @@ public:
     std::string QueuedTagName() const {
         return tag_queue_.empty() ? std::string() : tag_queue_.front().first;
     }
+    // Layer-event registration. The framework emits two kinds of lyevent
+    // tags for the same (id, type): handler registrations (they name a
+    // callback via function=/click=/over=/out=) and mode toggles from
+    // btnstat (mode=enable/disable, no callback). A mode toggle must never
+    // drop the handler registered earlier, and a mode-only registration
+    // must never fire by itself.
+    struct LyeventEntry {
+        std::vector<std::pair<std::string, std::string>> attrs;
+        bool has_handler = false;
+        bool enabled = true;       // latest mode tag (init/enable → true)
+        uint64_t mode_seq = 0;     // registration order of that mode tag
+    };
     void StoreLyevent(const std::string &id,
-                      const std::map<std::string, std::string> &attrs) {
+                      const std::vector<std::pair<std::string, std::string>> &attrs) {
         std::string ty = "click";
-        for (const auto &kv : attrs)
+        bool handler = false;
+        const std::string *mode = nullptr;
+        for (const auto &kv : attrs) {
             if (kv.first == "type") ty = kv.second;
-        lyevents_[id][ty] = {attrs.begin(), attrs.end()};
+            else if (kv.first == "mode") mode = &kv.second;
+            else if (kv.first == "function" || kv.first == "click" ||
+                     kv.first == "over" || kv.first == "out" ||
+                     kv.first == "handler")
+                handler = true;
+        }
+        auto &e = lyevents_[id][ty];
+        if (handler || !e.has_handler) e.attrs = attrs;
+        e.has_handler = e.has_handler || handler;
+        if (mode) {
+            e.enabled = *mode != "disable";
+            e.mode_seq = ++lyevent_seq_;
+        }
     }
 
     // A [stop]/[return] arriving as a tag (e.g. estag_call's final stop)
@@ -349,9 +391,6 @@ private:
     static int l_getScriptBlock(lua_State *L);
     static int l_lyevent(lua_State *L);
     bool PushGlobalFn(const std::string &fn, bool quiet);
-    bool CallEvent(const std::string &fn,
-                   const std::vector<std::pair<std::string, std::string>> &param,
-                   bool quiet);
     void FireOnPush(int key);   // press dispatch → registered setonpush handler
     static int l_debug(lua_State *L);
     static int l_now(lua_State *L);
@@ -371,14 +410,16 @@ private:
     Compositor *compositor_ = nullptr;
     lua_State *L_ = nullptr;
     std::map<std::string, std::string> vars_;    // script-visible variables
+    // Macro scope save slots: per scope, name → (existed, previous value).
+    std::vector<std::vector<std::pair<std::string, std::pair<bool, std::string>>>>
+        var_scopes_;
     std::map<std::string, std::string> sysvals_; // engine system values (os, screen_width, ...)
     std::map<std::string, std::string> magic_paths_;
     std::map<std::string, std::string> event_handlers_; // onEnterFrame -> Lua fn name
     int enterframe_failures_ = 0;                       // error-log rate limiting
-    std::map<std::string,
-                 std::map<std::string,
-                          std::vector<std::pair<std::string, std::string>>>>
-        lyevents_;   // layer id → event type (click/dragin/drag/dragout) → attrs
+    std::map<std::string, std::map<std::string, LyeventEntry>>
+        lyevents_;            // layer id → event type (click/drag/...) → entry
+    uint64_t lyevent_seq_ = 0; // mode-tag ordering for enable/disable resolution
     // setonpush/delonpush registry (framework key→handler): the CLICK key
     // (tap) drives button activation/dialog routing via setonpush_calllua.
     std::map<int, std::vector<std::pair<std::string, std::string>>> onpush_;
@@ -395,6 +436,13 @@ private:
     bool timed_wait_ = false;
     bool wait_accept_input_ = true;
     bool click_wait_announced_ = false;
+    // Tracks whether a text tween is pending while a click wait stays
+    // announced: keyClickStart samples a non-empty getScriptWaitReason()
+    // (flg.waitflag) when the wait begins mid-print, and the tween finishing
+    // is not a wait transition, so nothing would re-announce — menu buttons
+    // would stay blocked for the whole wait. IsWaiting() keeps this sampled
+    // and re-announces OUT+IN when the tween drains.
+    bool wait_reason_pending_ = false;
     // True while an onClickWaitIn/Out handler runs (AnnounceWaitState): the
     // wait flags are mid-transition, so the lazy poll inside
     // l_getScriptWaitReason must not re-enter IsWaiting()/SetWaiting().
@@ -444,6 +492,8 @@ private:
     std::map<std::string, std::string> font_name_;   // small visible area
     std::map<std::string, std::string> font_defaults_; // [fontdefault]
     std::map<std::string, std::string> glyph_config_;  // [glyph] click-wait icon
+    std::string glyph_message_layer_;  // message layer selected at [glyph] time
+    void HomeGlyph();                  // [glyph homing=1] follow the text pen
     bool link_active_ = false, link_enabled_ = true;   // [link]/[linkdisable]
     std::string link_file_, link_label_;
     std::chrono::steady_clock::time_point wait_until_;

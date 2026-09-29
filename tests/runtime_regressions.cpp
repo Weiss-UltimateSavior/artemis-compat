@@ -478,6 +478,21 @@ int main(int argc, char** argv) {
         e:tag{'/chgmsg'}
         assert(e:var('s.current_message_layer') == '')
     )", "nested message selection"), "closing a nested message restores the previous selection");
+    Check(events.DoString(R"(
+        e:tag{'chgmsg', id='dialogue'}
+        e:tag{'glyph', layer='1.90', homing='1'}
+        e:tag{'print', data='AAAA'}
+        e:tag{'/chgmsg'}
+    )", "glyph homing"), "glyph tag homes the click-wait layer to the text end");
+    const auto glyph_info = compositor.GetLayerInfo("1.90");
+    // Host-mock text: 40 units per glyph on a layer created at (40, 600).
+    Check(glyph_info.found && glyph_info.left == 200 && glyph_info.top == 600,
+          "homing parks the glyph at the end-of-text pen across parent chains");
+    Check(events.DoString("e:tag{'chgmsg', id='dialogue'}; "
+        "e:tag{'glyph', layer='1.91', homing='0'}; e:tag{'print', data='AA'}; e:tag{'/chgmsg'}",
+        "fixed glyph"), "homing=0 keeps the scripted glyph position");
+    Check(!compositor.GetLayerInfo("1.91").found,
+          "homing=0 never materializes or moves the glyph layer");
     Check(events.DoString("calls=0; function button(e,p) calls=calls+1 end; "
                           "e:setEventFilter(function(e,kind,p) return 1 end); "
                           "e:tag{'lyevent',id='500.1',type='click',handler='calllua',['function']='button'}",
@@ -489,6 +504,125 @@ int main(int argc, char** argv) {
     events.ClickAt(50,50); events.RunEnterFrame();
     Check(events.DoString("assert(calls==1)", "filter cleared"), "clearing filter restores action exactly once");
     Check(events.IsWaiting(), "button action must not release the scenario wait");
+
+    // lyevent merge model: btnstat's mode-only tags must gate, never replace,
+    // the handler registered for the same (id, type); the NEWEST mode tag on
+    // the owner or its ancestors decides the effective state.
+    auto add_hit_layer = [&](const char *lid, const char *x) {
+        compositor.SetProps(lid, {{"x", x}, {"y", "0"}, {"w", "100"}, {"h", "100"}});
+        for (auto &l : const_cast<std::vector<artc::Layer>&>(compositor.Layers()))
+            if (l.id == lid) { l.texture = 1; break; }
+    };
+    add_hit_layer("500.1.0", "150");
+    add_hit_layer("500.2", "300");
+    add_hit_layer("500.3", "450");
+    add_hit_layer("500.4", "600");
+    Check(events.DoString(R"(
+        qcalls=0; pushes=0
+        function button_q(e,p) qcalls=qcalls+1 end
+        function onkey(e,p) pushes=pushes+1 end
+        -- handler first, then btnstat's disable on the same id, then a group
+        -- enable on the parent (system_btnon): the newer parent mode wins.
+        e:tag{'lyevent', id='500.1.0', type='click', handler='calllua',
+              ['function']='button_q', lua='adv_qsave'}
+        e:tag{'lyevent', id='500.1.0', type='click', mode='disable'}
+        e:tag{'lyevent', id='500.1', type='click', mode='enable'}
+    )", "lyevent merge setup"), "handler + mode tags registered");
+    events.ClickAt(200,50); events.RunEnterFrame();
+    Check(events.DoString("assert(qcalls==1)", "newest mode wins"),
+          "later group enable reactivates a button disabled at creation");
+    Check(events.DoString("e:tag{'lyevent', id='500.1.0', type='click', mode='disable'}",
+                          "disable again"), "btnstat disable");
+    events.ClickAt(200,50); events.RunEnterFrame();
+    Check(events.DoString("assert(qcalls==1)", "disable gates"),
+          "a newer specific disable gates the handler again");
+    Check(events.DoString("assert(calls==1)", "handler kept"),
+          "mode tags never replaced the sibling handler registration");
+    // A layer carrying ONLY mode tags has no handler: the click falls through
+    // to the plain advance path instead of firing a phantom event.
+    Check(events.DoString("e:tag{'lyevent', id='500.2', type='click', mode='enable'}",
+                          "mode-only layer"), "mode-only registration");
+    events.SetWaiting(true);
+    events.ClickAt(350,50); events.RunEnterFrame();
+    Check(!events.IsWaiting(), "mode-only layer click falls back to text advance");
+    // Self-contained handlers (attrs carry lua=) run their own calllua; only
+    // cursor-sync handlers (no lua=) drive the CLICK key.
+    Check(events.DoString(R"(
+        e:tag{'setonpush', key='1', ['function']='onkey'}
+        e:tag{'lyevent', id='500.3', type='click', handler='calllua',
+              ['function']='button_q', lua='adv_qsave'}
+        e:tag{'lyevent', id='500.4', type='click', handler='calllua',
+              ['function']='button_q', key='1'}
+    )", "self-contained setup"), "lua-carrying and cursor-sync buttons");
+    events.ClickAt(500,50); events.RunEnterFrame();
+    Check(events.DoString("assert(qcalls==2 and pushes==0)", "self-contained click"),
+          "self-contained handler fires without emitting the CLICK key");
+    events.ClickAt(650,50); events.RunEnterFrame();
+    Check(events.DoString("assert(qcalls==3 and pushes==1)", "cursor-sync click"),
+          "cursor-sync handler still drives the CLICK key exactly once");
+
+    // Drag chain: a draggable layer's drag handler fires on move and its
+    // dragout handler fires on release — the save/load screen's thumbnail
+    // drag (save_thumb_drag/dragout) relies on dragout to re-enable the
+    // buttons it disables at drag start.
+    add_hit_layer("500.99.1", "750");
+    for (auto &l : const_cast<std::vector<artc::Layer>&>(compositor.Layers()))
+        if (l.id == "500.99.1") { l.draggable = true; break; }
+    Check(events.DoString(R"(
+        drags=0; dragouts=0
+        function thumb_drag(e,p) drags=drags+1 end
+        function thumb_dragout(e,p) dragouts=dragouts+1 end
+        e:tag{'lyevent', id='500.99.1', type='drag', handler='calllua', ['function']='thumb_drag'}
+        e:tag{'lyevent', id='500.99.1', type='dragout', handler='calllua', ['function']='thumb_dragout'}
+    )", "drag chain setup"), "register drag and dragout handlers");
+    events.BeginDrag(760,50);
+    events.DragMove(770,50);
+    events.EndDrag();
+    Check(events.DoString("assert(drags==1 and dragouts==1, drags..'/'..dragouts)", "drag chain"),
+          "drag move fires drag, release fires dragout exactly once each");
+
+    // A click wait announced mid-print samples {textTween} in keyClickStart
+    // (flg.waitflag); when the tween drains mid-wait the engine must
+    // re-announce OUT+IN so the framework re-samples an empty reason —
+    // otherwise menu buttons stay blocked for the whole wait.
+    Check(events.DoString(R"(
+        wins=0; wouts=0; inreason=-1
+        function onwin(e)
+            wins=wins+1
+            local n=0; for k,v in pairs(e:getScriptWaitReason()) do n=n+1 end
+            inreason=n
+        end
+        function onwout(e) wouts=wouts+1 end
+        e:setEventHandler{onClickWaitIn='onwin', onClickWaitOut='onwout'}
+    )", "wait announce handlers"), "register wait announce handlers");
+    {
+        // Host-mock text does not populate glyphs; inject a synthetic
+        // still-running tween on the visible 500.1 layer instead.
+        auto &layers = const_cast<std::vector<artc::Layer>&>(compositor.Layers());
+        artc::Layer *host_layer = nullptr;
+        for (auto &l : layers) if (l.id == "500.1") { host_layer = &l; break; }
+        Check(host_layer != nullptr, "host layer for synthetic tween");
+        host_layer->text_in.push_back({"alpha", 0, 100, 0, 0});
+        artc::TextGlyph g; g.start_ms = 1e9;            // tween still running
+        host_layer->glyphs.push_back(g);
+    }
+    events.SetWaiting(true);            // IN announced with {textTween}
+    events.IsWaiting();                 // tween pending: no re-announce yet
+    Check(events.DoString("assert(wins==1 and wouts==0 and inreason==1)", "mid-print IN"),
+          "wait IN mid-print samples the textTween reason exactly once");
+    {
+        auto &layers = const_cast<std::vector<artc::Layer>&>(compositor.Layers());
+        for (auto &l : layers)
+            if (l.id == "500.1")
+                for (auto &g : l.glyphs) g.start_ms = -1e9;  // tween drained
+    }
+    events.IsWaiting();                 // drained: re-announce OUT+IN
+    Check(events.DoString("assert(wins==2 and wouts==1 and inreason==0)", "drained re-announce"),
+          "tween draining mid-wait re-announces so the reason re-samples empty");
+    events.SetWaiting(false);
+    Check(events.DoString("assert(wouts==2); "
+                          "e:setEventHandler{onClickWaitIn='', onClickWaitOut=''}", "wait OUT"),
+          "wait end announces OUT once more");
     Check(events.DoString("nested={callbacks={tick=function(e) end}}", "nested callback"), "define dotted callback");
     const int stack_top = lua_gettop(events.state());
     for (int i=0; i<100; ++i) Check(events.CallGlobal("nested.callbacks.tick"), "invoke dotted callback");
@@ -499,7 +633,27 @@ int main(int argc, char** argv) {
     const std::map<std::string,std::string> files = {
         {"main.iet", "*main\n[calllua function=redirect]\n[calllua function=wrong]\n[stop]\n"},
         {"next.iet", "*next\n[calllua function=right]\n"},
-        {"menu.iet", "*menu\n[calllua function=right]\n[return]\n"}
+        {"menu.iet", "*menu\n[calllua function=right]\n[return]\n"},
+        {"load.iet", "*load\n[calllua function=load_start file=\"$t.file\" suspend]\n[stop]\n"},
+        {"dlg.iet", "*dlg\n[yesno file=\"title\"]\n[stop]\n"},
+        {"park.iet", "*park\n[call file=\"ui.iet\" label=\"ui\"]\n[calllua function=dlgright]\n[stop]\n"},
+        {"menu2.iet", "*menu2\n[calllua function=dlgright]\n[return]\n"},
+        {"ui.iet", "*ui\n[stop]\n"},
+        {"branch.iet", "*branch\n"
+                       "[if estimate=\"$t.flag == 1\"]\n[calllua function=hitA]\n"
+                       "[elseif estimate=\"$t.flag == 2\"]\n[calllua function=hitB]\n"
+                       "[else]\n[calllua function=hitC]\n[/if]\n"
+                       "[if estimate=\"$t.one == 1\"][calllua function=hitOne][/if]\n"
+                       "[calllua function=hitEnd]\n[stop]\n"},
+        {"macdef.iet", "*mt\n"
+                       "[var name=\"t.ex\" system=\"var_exist\" target=\"time\" local=\"1\"]\n"
+                       "[if estimate=\"$t.ex == 1\"][calllua function=captime data=\"$time\"][/if]\n"
+                       "[return]\n"},
+        {"macuse.iet", "*use\n[calllua function=seed]\n[localm]\n[mt time=\"500\"]\n"
+                       "[calllua function=checkrestore]\n[mt]\n[calllua function=checkfinal]\n[stop]\n"
+                       "*localm\n[calllua function=caplocal]\n[return]\n"},
+        {"boot.iet", "*top\n[stop]\n*game_start\n[calllua function=hitA]\n[stop]\n"},
+        {"mac2.iet", "*game_start\n[calllua function=hitB]\n[stop]\n"}
     };
     std::vector<unsigned char> pack;
     auto u32=[&](uint32_t v){ for(int i=0;i<4;++i) pack.push_back((v>>(i*8))&255); };
@@ -530,6 +684,7 @@ int main(int argc, char** argv) {
     artc::AsbRunner runner;runner.SetPackSource(&fixture);
     artc::LuaEngine script;
     Check(script.Init(&fixture,ini,"android",1280,720), "script engine init");
+    runner.SetLuaEngine(&script);
     script.SetJumpHandler([&](const std::string& f,const std::string& l){runner.Jump(f,l);});
     Check(script.DoString("value=0; function redirect(e) e:tag{'jump',file='next.iet',label='next'} end; "
                           "function right(e) value=value+1 end; function wrong(e) error('stale script') end",
@@ -538,6 +693,27 @@ int main(int argc, char** argv) {
     for(int i=0;i<8 && !runner.Halted();++i) runner.ExecuteLine(script);
     Check(script.DoString("assert(value==1)","new cursor"), "reentrant jump executes target exactly once");
     Check(runner.Halted(), "end of script halts without an out-of-bounds Current");
+    // ASB [calllua] must pass the attribute table as fn(e, param) with $vars
+    // resolved — the save/load framework's load_start reads param.file and
+    // load_exec reads param["0"] for the valueless `suspend` marker.
+    Check(script.DoString("captured=nil; function load_start(e,param) captured=param end; "
+                          "e:tag{'var',name='t.file',data='slot01.dat'}", "capture load_start"),
+          "define load_start capture and seed t.file");
+    Check(runner.Jump("load.iet","load"), "load calllua script");
+    for(int i=0;i<4 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(script.DoString("assert(captured and captured.file=='slot01.dat' and "
+                          "captured['0']=='suspend')", "calllua params"),
+          "calllua passes the resolved attribute table as fn(e, param)");
+    // A script tag matched by neither the framework filter nor a native
+    // handler falls back to the Lua global of the same name, fn(e, attrs) —
+    // the dialog framework's yesno lives only as a global (its tags.yesno
+    // registration is commented out in the game scripts).
+    Check(script.DoString("dlgseen=nil; function yesno(e,param) dlgseen=param end",
+                          "define yesno global"), "define yesno capture");
+    Check(runner.Jump("dlg.iet","dlg"), "load yesno-tag script");
+    for(int i=0;i<4 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(script.DoString("assert(dlgseen and dlgseen.file=='title')", "global fallback"),
+          "unhandled tag falls back to the Lua global of the same name");
     script.SetScriptRunner(&runner);
     Check(runner.Jump("main.iet","main"), "reset original scenario");
     script.SetWaiting(true);
@@ -565,6 +741,126 @@ int main(int argc, char** argv) {
     script.ResumeClock();
     runner.EndEvent(paused);
     Check(script.IsWaiting(), "app pause also freezes the wait suspended below a menu event");
+
+    // An event jump away from a [stop]-halted frame must not preserve the
+    // dead frame: the yesno dialog framework parks dialog_open at [stop],
+    // jumps from the click handler to dialog_close, and expects
+    // dialog_close's [return] to land at the real caller below (adv_title's
+    // resume line), not back on the halted [stop].
+    Check(script.DoString("dlgvalue=0; function dlgright(e) dlgvalue=dlgvalue+1 end",
+                          "dialog counter"), "define dialog counter");
+    Check(runner.Jump("park.iet","park"), "load park script");
+    for(int i=0;i<4 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(runner.Halted(), "called ui script parks at [stop]");
+    const auto dlg = runner.BeginEvent(script);
+    Check(runner.Jump("menu2.iet","menu2"), "event jumps to the close script");
+    runner.EndEvent(dlg);
+    for(int i=0;i<8 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(script.DoString("assert(dlgvalue==2)", "dialog event jump"),
+          "[return] after an event jump from a halted frame lands at the real caller");
+    Check(runner.Halted(), "park script then reaches its own [stop]");
+
+    // Full ADV-framework menu round-trip: an event-driven call into a UI
+    // script that parks at [stop], then the framework's explicit return tag
+    // plus a trailing return-UI call must land back on the exact story
+    // cursor with its click wait intact and no frames leaked.
+    Check(runner.Jump("main.iet","main"), "story re-entry for menu round-trip");
+    script.SetWaiting(true);
+    const auto story_pc = runner.CurrentIndex();
+    const auto open_ev = runner.BeginEvent(script);
+    runner.Call("ui.iet","ui");
+    runner.EndEvent(open_ev);
+    Check(script.DoString("assert(#e:getScriptStack()==2)", "menu stack depth"),
+          "menu open leaves exactly story+ui on the script stack");
+    Check(!script.IsWaiting(), "ui context runs with the story wait suspended");
+    for(int i=0;i<8 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(runner.Halted() && runner.CurrentFile()=="ui.iet", "ui script parks at stop");
+    const auto back_ev = runner.BeginEvent(script);
+    Check(runner.Return(), "framework return tag pops the story frame");
+    Check(runner.CurrentFile()=="main.iet" && runner.CurrentIndex()==story_pc &&
+          script.IsWaiting() && !runner.Halted(),
+          "return tag lands on the story cursor with its wait restored");
+    runner.Call("menu.iet","menu");   // return-UI script: runs, ends in [return]
+    for(int i=0;i<8 && !script.IsWaiting();++i) runner.ExecuteLine(script);
+    runner.EndEvent(back_ev);
+    Check(runner.CurrentFile()=="main.iet" && runner.CurrentIndex()==story_pc &&
+          script.IsWaiting() && !runner.Halted(),
+          "return-ui call round-trips to the same story cursor and wait");
+    Check(script.DoString("assert(#e:getScriptStack()==1)", "round-trip stack"),
+          "no frames leak across the menu round-trip");
+
+    // Text .iet conditionals: [if]/[elseif]/[else]/[/if] compile to branch
+    // metadata so only the taken branch runs (they used to fall through and
+    // execute every body), including the one-line `[if …]…[/if]` form the
+    // 終端 macro uses for its optional time override.
+    Check(script.DoString("ahits=0;bhits=0;chits=0;onehits=0;endhits=0; "
+                          "function hitA(e) ahits=ahits+1 end; function hitB(e) bhits=bhits+1 end; "
+                          "function hitC(e) chits=chits+1 end; function hitOne(e) onehits=onehits+1 end; "
+                          "function hitEnd(e) endhits=endhits+1 end", "branch counters"),
+          "define branch counters");
+    Check(script.DoString("e:tag{'var',name='t.flag',data='2'}; e:tag{'var',name='t.one',data='0'}",
+                          "flag=2"), "seed branch flag 2");
+    Check(runner.Jump("branch.iet","branch"), "load branch script");
+    for(int i=0;i<16 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(script.DoString("assert(ahits==0 and bhits==1 and chits==0 and onehits==0 and endhits==1)",
+                          "flag 2 branches"),
+          "elseif branch runs; if/else bodies and a false one-line if are skipped");
+    Check(script.DoString("ahits=0;bhits=0;chits=0;endhits=0; e:tag{'var',name='t.flag',data='9'}",
+                          "flag=9"), "seed branch flag 9");
+    Check(runner.Jump("branch.iet","branch"), "reload branch script");
+    for(int i=0;i<16 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(script.DoString("assert(ahits==0 and bhits==0 and chits==1 and endhits==1)",
+                          "flag 9 branches"),
+          "else branch runs when every condition is false");
+    Check(script.DoString("ahits=0;chits=0;onehits=0;endhits=0; "
+                          "e:tag{'var',name='t.flag',data='1'}; e:tag{'var',name='t.one',data='1'}",
+                          "flag=1"), "seed branch flag 1");
+    Check(runner.Jump("branch.iet","branch"), "reload branch script again");
+    for(int i=0;i<16 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(script.DoString("assert(ahits==1 and chits==0 and onehits==1 and endhits==1)",
+                          "flag 1 branches"),
+          "if branch and a true one-line if run");
+
+    // Text .iet macros (KAG semantics): a tag matching a label calls it as a
+    // subroutine — same-file directly, boot-indexed scripts (macro.iet & co.)
+    // through the cross-file index. The tag's attributes seed a variable
+    // scope for the macro body ([終端 time=1000] → $time), restored on
+    // return; a var_exist probe inside the macro sees the attribute.
+    Check(script.DoString("captured_time=nil; restored=0; final=0; localhits=0; "
+                          "function captime(e,param) captured_time=param.data end; "
+                          "function caplocal(e) localhits=localhits+1 end; "
+                          "function seed(e) e:tag{'var',name='time',data='outer'} end; "
+                          "function checkrestore(e) assert(e:var('time')=='outer','macro scope leaked') "
+                          "  e:tag{'var',name='time',system='delete'} restored=1 end; "
+                          "function checkfinal(e) assert(captured_time=='500','no-attr macro ran body') final=1 end",
+                          "macro captures"), "define macro captures");
+    Check(runner.Jump("macdef.iet","mt"), "index the macro script (boot load)");
+    Check(runner.Jump("macuse.iet","use"), "load macro user script");
+    for(int i=0;i<24 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(script.DoString("assert(localhits==1 and captured_time=='500' and restored==1 and final==1)",
+                          "macro round-trip"),
+          "macros run as subroutines with attribute scopes, restored on return");
+    Check(runner.Halted(), "macro user script reaches its [stop]");
+
+    // Boot anchor: the runner stays parked on first.iet after the boot
+    // interpreter ran *top, so the boot chain's bare-label jumps
+    // (initLua2's `jump label=game_start`) resolve in first.iet even though
+    // a macroadd'ed file defines the same label; from any other context the
+    // macro registration keeps winning the cross-file index.
+    Check(script.DoString("ahits=0; bhits=0", "anchor counters"), "reset anchor counters");
+    Check(runner.Jump("mac2.iet","game_start"), "index the macro game_start");
+    Check(runner.LoadBootAnchor("boot.iet"), "anchor the boot script");
+    Check(runner.Halted() && runner.CurrentFile()=="boot.iet",
+          "anchor parks the runner halted on the boot script");
+    Check(runner.Jump("","game_start"), "bare boot jump");
+    for(int i=0;i<4 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(script.DoString("assert(ahits==1 and bhits==0)", "anchor local wins"),
+          "bare label from the boot context resolves in the boot script");
+    Check(runner.Jump("ui.iet","ui"), "leave the boot context");
+    Check(runner.Jump("","game_start"), "bare jump away from the boot context");
+    for(int i=0;i<4 && !runner.Halted();++i) runner.ExecuteLine(script);
+    Check(script.DoString("assert(ahits==1 and bhits==1)", "macro index wins elsewhere"),
+          "bare label away from the boot context resolves through the macro index");
     std::filesystem::remove(path);
 
     // ---- E-mote Lua surface: contract failures, then a full synthetic model ----
@@ -656,5 +952,31 @@ int main(int argc, char** argv) {
         assert(pluto.unpersist({},s32)=="a\0b")
         assert(pluto.unpersist({},"t1 = {}\nt1[\"x\"] = 7\nreturn t1").x==7)
     )","native Pluto value codec"),"native Pluto graphs, 32-bit lengths and malformed input");
+    // Text .iet tag lines keep their meaning when a `//` comment (or stray
+    // tab) trails the closing bracket — system/system.iet adv_save ends
+    // branches with `[ui_return]	// uiに戻る`; classifying that as scenario
+    // text drops the tag and the framework's button lock never releases.
+    {
+        artc::AsbScript parsed;
+        Check(artc::ParseIetScript(
+                  "*adv_save\n"
+                  "[ui_return]\t// uiに戻る\n"
+                  "[ui_return]   // spaced comment\n"
+                  "[btn_stop]\t\n"
+                  "[if estimate=\"$t.x == 1\"]// tight comment\n"
+                  "[r]本文 // not a tag line\n",
+                  &parsed),
+              "parse iet with trailing comments");
+        Check(parsed.lines.size() == 6, "six lines parsed");
+        Check(parsed.lines[0].is_label && parsed.lines[0].command == "adv_save",
+              "label line");
+        Check(parsed.lines[1].command == "ui_return" && parsed.lines[1].attrs.empty(),
+              "tab-comment tag line");
+        Check(parsed.lines[2].command == "ui_return", "space-comment tag line");
+        Check(parsed.lines[3].command == "btn_stop", "trailing-tab tag line");
+        Check(parsed.lines[4].command == "if", "tight-comment tag line");
+        Check(parsed.lines[5].command == "\x01""TEXT",
+              "text after a tag bracket stays scenario text");
+    }
     std::cout << "audio channels and wait regressions passed\n";
 }
