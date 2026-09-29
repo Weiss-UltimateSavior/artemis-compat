@@ -7,12 +7,15 @@
 namespace artc {
 struct LayerEffect {
     std::string shader, blend="normal", mask;
-    bool negative=false, grayscale=false;
+    bool negative=false;
+    // 0 = off, 1 = full luminance; the builtin shader mixes by this weight so
+    // E-mote's SetGrayscale can animate the desaturation.
+    float grayscale=0.0f;
     uint32_t multiply=0xffffff;
     int intermediate=0;
     std::map<std::string,std::string> parameters;
     bool Active() const {
-        return !shader.empty() || blend!="normal" || negative || grayscale ||
+        return !shader.empty() || blend!="normal" || negative || grayscale>0.0f ||
                multiply!=0xffffff || intermediate!=0 || !mask.empty();
     }
     void Set(const std::map<std::string,std::string>& attrs);

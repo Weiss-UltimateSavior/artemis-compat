@@ -90,8 +90,11 @@ char kPackKey;
 // same-id replace reports "layer removed" instead of dangling. Method
 // names follow the reference motion-player binding; the original proxy was
 // luabind-registered with the same camelCase surface, so both spellings
-// are accepted. Unregistered physics/hit-test methods (startWind,
-// setOuterForce, contains, ...) fall through to a logging stub like the
+// are accepted. Signatures track the native driver (emotedriver.dll):
+// setters are (value, time_ms, ease), fades are (label, time_ms, ease) and
+// setTimelineBlendRatio is (label, ratio, time_ms, ease, flags).
+// Unregistered physics/hit-test methods (startWind, setOuterForce,
+// setOuterRot, contains, ...) fall through to a logging stub like the
 // e-table does — this layer deliberately does not fake SDK behavior it
 // cannot render.
 namespace {
@@ -156,13 +159,13 @@ int m_getCoord(lua_State *L) {
     lua_pushnumber(L, y);
     return 2;
 }
-// Reference contract is setScale(s, transition, ease); four args are the
-// per-axis extension setScale(sx, sy, transition, ease).
+// Reference contract is setScale(s, transition, ease); four user arguments are
+// the per-axis extension setScale(sx, sy, transition, ease).
 int m_setScale(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
     const double s = luaL_checknumber(L, 2);
-    if (lua_gettop(L) >= 4) {
+    if (lua_gettop(L) >= 5) {
         e->SetScale(s, luaL_checknumber(L, 3), luaL_optnumber(L, 4, 0),
                     luaL_optnumber(L, 5, 0));
     } else {
@@ -197,6 +200,13 @@ int m_getColor(lua_State *L) {
     if (!e) return 2;
     lua_pushinteger(L, static_cast<lua_Integer>(e->GetColor()));
     return 1;
+}
+int m_setGrayscale(lua_State *L) {
+    EmotePlayer *e = Emote(L);
+    if (!e) return 2;
+    e->SetGrayscale(luaL_checknumber(L, 2), luaL_optnumber(L, 3, 0),
+                    luaL_optnumber(L, 4, 0));
+    return 0;
 }
 int m_show(lua_State *L) {
     EmotePlayer *e = Emote(L);
@@ -250,8 +260,7 @@ int m_fadeInTimeline(lua_State *L) {
     if (!e) return 2;
     const char *label = luaL_checkstring(L, 2);
     std::string error;
-    if (!e->FadeInTimeline(label, luaL_checknumber(L, 3),
-                           static_cast<int>(luaL_optinteger(L, 4, 0)), error))
+    if (!e->FadeInTimeline(label, luaL_checknumber(L, 3), luaL_optnumber(L, 4, 0), error))
         return EmoteError(L, error);
     lua_pushboolean(L, true);
     return 1;
@@ -261,17 +270,21 @@ int m_fadeOutTimeline(lua_State *L) {
     if (!e) return 2;
     const char *label = luaL_checkstring(L, 2);
     std::string error;
-    if (!e->FadeOutTimeline(label, luaL_checknumber(L, 3), error))
+    if (!e->FadeOutTimeline(label, luaL_checknumber(L, 3), luaL_optnumber(L, 4, 0), error))
         return EmoteError(L, error);
     lua_pushboolean(L, true);
     return 1;
 }
+// setTimelineBlendRatio(label, ratio [, time [, ease [, flags]]]) — the driver
+// contract; a non-zero flags arms the fade-out stop.
 int m_setTimelineBlendRatio(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
     const char *label = luaL_checkstring(L, 2);
     std::string error;
-    if (!e->SetTimelineBlendRatio(label, luaL_checknumber(L, 3), error))
+    if (!e->SetTimelineBlendRatio(label, luaL_checknumber(L, 3),
+                                  luaL_optnumber(L, 4, 0), luaL_optnumber(L, 5, 0),
+                                  lua_toboolean(L, 6) != 0, error))
         return EmoteError(L, error);
     lua_pushboolean(L, true);
     return 1;
@@ -374,6 +387,17 @@ int m_getVariable(lua_State *L) {
     lua_pushnumber(L, value);
     return 1;
 }
+int m_setVariableDiff(lua_State *L) {
+    EmotePlayer *e = Emote(L);
+    if (!e) return 2;
+    std::string error;
+    if (!e->SetVariableDiff(luaL_checkstring(L, 2), luaL_checkstring(L, 3),
+                            luaL_checknumber(L, 4), luaL_optnumber(L, 5, 0),
+                            luaL_optnumber(L, 6, 0), error))
+        return EmoteError(L, error);
+    lua_pushboolean(L, true);
+    return 1;
+}
 int m_getAnimating(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
@@ -390,6 +414,12 @@ int m_pass(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
     e->Pass();
+    return 0;
+}
+int m_step(lua_State *L) {
+    EmotePlayer *e = Emote(L);
+    if (!e) return 2;
+    e->Step();
     return 0;
 }
 int m_progress(lua_State *L) {
@@ -413,6 +443,7 @@ const struct {
     {"setMirror", m_setMirror}, {"SetMirror", m_setMirror},
     {"setColor", m_setColor}, {"SetColor", m_setColor},
     {"getColor", m_getColor}, {"GetColor", m_getColor},
+    {"setGrayscale", m_setGrayscale}, {"SetGrayscale", m_setGrayscale},
     {"show", m_show}, {"Show", m_show},
     {"hide", m_hide}, {"Hide", m_hide},
     {"playTimeline", m_playTimeline}, {"PlayTimeline", m_playTimeline},
@@ -447,10 +478,12 @@ const struct {
     {"GetVariableLabelAt", m_getVariableLabelAt},
     {"setVariable", m_setVariable}, {"SetVariable", m_setVariable},
     {"getVariable", m_getVariable}, {"GetVariable", m_getVariable},
+    {"setVariableDiff", m_setVariableDiff}, {"SetVariableDiff", m_setVariableDiff},
     {"getAnimating", m_getAnimating}, {"GetAnimating", m_getAnimating},
     {"isAnimating", m_getAnimating}, {"IsAnimating", m_getAnimating},
     {"skip", m_skip}, {"Skip", m_skip},
     {"pass", m_pass}, {"Pass", m_pass},
+    {"step", m_step}, {"Step", m_step},
     {"progress", m_progress}, {"Progress", m_progress},
 };
 

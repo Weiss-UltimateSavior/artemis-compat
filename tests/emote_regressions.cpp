@@ -164,6 +164,44 @@ static void PlayerTests() {
           "unknown variable rejected");
     Check(vars.GetVariable("missing",&found)==0 && !found,"unknown variable read reports missing");
 
+    // Native additions recovered from the driver: SetGrayscale animates a
+    // luminance blend on the textured scene layers, SetVariableDiff drives a
+    // matched pair from one control, and Step advances one 60 fps frame.
+    artc::EmotePlayer shading;
+    Check(shading.Load(model,error),error.c_str());
+    shading.SetGrayscale(1,0,0);
+    Check(shading.GetGrayscale()==1,"grayscale round-trip");
+    Check(shading.Render(compositor,"g",error),error.c_str());
+    bool grayscale_set=false;
+    for(const auto& l:compositor.Layers())
+        if(l.id.rfind("g",0)==0 && l.id.size()>=7 &&
+           l.id.compare(l.id.size()-7,7,".000000")==0 && l.effect.grayscale>0.99f)
+            grayscale_set=true;
+    Check(grayscale_set,"grayscale reaches the textured scene layer");
+    shading.SetGrayscale(0,1000,0);
+    shading.Progress(500);
+    Check(std::abs(shading.GetGrayscale()-0.5)<1e-9,"grayscale transitions");
+
+    auto pair_document=emote_fixture::PlayerDocument();
+    pair_document.root.object["metadata"].object["variableList"].array.push_back(O({{"label",S("partner")}}));
+    auto pair_model=std::make_shared<artc::EmoteModel>();
+    Check(pair_model->Load(std::move(pair_document),error),error.c_str());
+    artc::EmotePlayer pairs;
+    Check(pairs.Load(pair_model,error),error.c_str());
+    Check(!pairs.SetVariableDiff("expression","missing",5,0,0,error) &&
+          error.find("unknown")!=std::string::npos,"a diff pair requires model variables");
+    Check(pairs.SetVariableDiff("expression","partner",5,1000,0,error),error.c_str());
+    pairs.Progress(500);
+    Check(pairs.GetVariable("expression",&found)==2.5 && found &&
+          pairs.GetVariable("partner",&found)==-2.5 && found,
+          "a difference pair drives the two variables equal and opposite");
+
+    artc::EmotePlayer stepper;
+    Check(stepper.Load(model,error),error.c_str());
+    Check(stepper.PlayTimeline("once",0,error),error.c_str());
+    for(int i=0;i<60;++i) stepper.Step();
+    Check(!stepper.IsTimelinePlaying("once"),"step advances one 60 fps frame");
+
     // queue semantics: restart-in-place, stop releasing the queue
     artc::EmotePlayer queue;
     Check(queue.Load(model,error),error.c_str());
@@ -186,15 +224,15 @@ static void PlayerTests() {
     Check(queue.TimelineBlendRatio("loop",&found)==0 && found,"fade-in starts silent");
     queue.Progress(100);
     Check(std::abs(queue.TimelineBlendRatio("loop",&found)-0.5)<1e-9 && found,"fade-in interpolates");
-    Check(queue.FadeOutTimeline("loop",200,error),error.c_str());
+    Check(queue.FadeOutTimeline("loop",200,0,error),error.c_str());
     queue.Progress(200);  // blend reaches 0 → auto-stop
     Check(!queue.IsTimelinePlaying("loop") && queue.TimelineBlendRatio("loop",&found)==0 && !found,
           "fade-out removes the timeline at zero blend");
-    Check(!queue.FadeOutTimeline("loop",100,error) && error.find("not playing")!=std::string::npos,
+    Check(!queue.FadeOutTimeline("loop",100,0,error) && error.find("not playing")!=std::string::npos,
           "fading an idle timeline fails");
     Check(queue.FadeInTimeline("loop",100,0,error),error.c_str());
     queue.Progress(100);  // fade completes → blend 1
-    Check(queue.FadeOutTimeline("loop",1000,error),error.c_str());
+    Check(queue.FadeOutTimeline("loop",1000,0,error),error.c_str());
     queue.Progress(100);  // blend 1 → 0.9
     Check(queue.SetTimelineBlendRatio("loop",0.5,error),error.c_str());
     queue.Progress(2000);
@@ -203,6 +241,23 @@ static void PlayerTests() {
     Check(queue.SetTimelineHoldEnd("loop",false,error),error.c_str());
     queue.Progress(1000);  // 60 frames ≥ loop end 20 → parks
     Check(!queue.IsTimelinePlaying("loop"),"hold-end parks a looping timeline at its loop end");
+
+    // The native contract carries a transition: (label, ratio, time, ease, flags).
+    artc::EmotePlayer blend;
+    Check(blend.Load(model,error),error.c_str());
+    Check(blend.PlayTimeline("loop",0,error),error.c_str());
+    Check(blend.SetTimelineBlendRatio("loop",0.25,200,0,false,error),error.c_str());
+    Check(std::abs(blend.TimelineBlendRatio("loop",&found)-1.0)<1e-9 && found,
+          "a blend transition starts from the current ratio");
+    blend.Progress(100);
+    Check(std::abs(blend.TimelineBlendRatio("loop",&found)-0.625)<1e-9 && found,
+          "a blend transition interpolates");
+    blend.Progress(100);
+    Check(std::abs(blend.TimelineBlendRatio("loop",&found)-0.25)<1e-9 && found,
+          "a blend transition lands on the target");
+    Check(blend.SetTimelineBlendRatio("loop",0.0,100,0,true,error),error.c_str());
+    blend.Progress(100);
+    Check(!blend.IsTimelinePlaying("loop"),"a blend transition with flags removes the timeline at zero");
 
     // skip jumps finite timelines to their end and frees the queue
     artc::EmotePlayer skipper;

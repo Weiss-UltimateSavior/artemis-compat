@@ -33,11 +33,18 @@ public:
     bool IsLoopTimeline(const std::string& label) const;
     double TimelineTotalFrames(const std::string& label) const;  // <0 unknown
     // Fades act on live playback and bypass the sequential queue; fadeOut
-    // removes the timeline once its blend reaches zero.
-    bool FadeInTimeline(const std::string& label, double duration_ms, int flags, std::string& error);
-    bool FadeOutTimeline(const std::string& label, double duration_ms, std::string& error);
-    // Direct blend set cancels a running fade (and its auto-stop).
+    // removes the timeline once its blend reaches zero. The driver contract is
+    // (label, time_ms, ease) — there is no separate fade flag.
+    bool FadeInTimeline(const std::string& label, double duration_ms, double ease,
+                        std::string& error);
+    bool FadeOutTimeline(const std::string& label, double duration_ms, double ease,
+                         std::string& error);
+    // Direct blend set cancels a running fade (and its auto-stop). The driver
+    // contract is (label, ratio, time_ms, ease, flags); a non-zero flags arms
+    // the fade-out stop (the timeline is removed when the blend reaches zero).
     bool SetTimelineBlendRatio(const std::string& label, double ratio, std::string& error);
+    bool SetTimelineBlendRatio(const std::string& label, double ratio, double transition_ms,
+                               double ease, bool fade_out_stop, std::string& error);
     double TimelineBlendRatio(const std::string& label, bool* found) const;
     // setTimeline(label, loop): loop=false parks a looping timeline at its
     // loop end (hold-end) instead of wrapping; loop=true resumes wrapping.
@@ -58,6 +65,11 @@ public:
     bool SetVariable(const std::string& label, double value, double transition_ms,
                      double ease, std::string& error);
     double GetVariable(const std::string& label, bool* found) const;
+    // Native SetVariableDiff drives a matched pair from a single control keyed
+    // by the first label; GetVariableDiff reads that shared value back. The
+    // two variables move as a difference: label receives +value, pair -value.
+    bool SetVariableDiff(const std::string& label, const std::string& pair, double value,
+                         double transition_ms, double ease, std::string& error);
 
     // ---- player transforms (applied to the container layer) ----
     void SetCoord(double x, double y, double transition_ms, double ease);
@@ -67,6 +79,10 @@ public:
     // the picture (the compositor has no RGB tint); the RGB bits round-trip.
     void SetColor(uint32_t aarrggbb, double transition_ms, double ease);
     uint32_t GetColor() const;
+    // 0..1 luminance blend (native SetGrayscale(value, time, ease)); applied to
+    // the textured scene layers at render time.
+    void SetGrayscale(double value, double transition_ms, double ease);
+    double GetGrayscale() const { return grayscale_.value; }
     void GetCoord(double* x, double* y) const;
     void GetScale(double* x, double* y) const;
     double GetRot() const;
@@ -78,6 +94,10 @@ public:
 
     // ---- clock ----
     void Progress(double delta_ms);
+    // Advance exactly one 60 fps frame. The driver's Step commits one internal
+    // control step and re-evaluates the scene; here the whole player clock
+    // advances one frame so scripts can drive frame-by-frame playback.
+    void Step();
     bool IsAnimating() const;
     // Complete every transition instantly; non-loop timelines jump to their
     // final frame and hold it (looping timelines keep playing — documented
@@ -124,7 +144,7 @@ private:
     std::deque<std::pair<std::string, int>> queued_;                // sequential waits
     std::map<std::string, Animated> variables_;                     // model labels at 0
     Animated coord_x_, coord_y_, rot_;
-    Animated scale_x_{1}, scale_y_{1}, alpha_{1};
+    Animated scale_x_{1}, scale_y_{1}, alpha_{1}, grayscale_{0};
     uint32_t color_rgb_ = 0xFFFFFF;
     double base_frame_ = 0, last_now_ms_ = -1;
     bool mirror_ = false, hidden_ = false;

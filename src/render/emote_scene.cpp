@@ -211,8 +211,12 @@ bool EmoteScene::Evaluate(double frame,const std::map<std::string,double>& varia
     }catch(const std::exception& e){error=e.what();return false;}
 }
 bool EmoteScene::Render(Compositor& c,const std::string& id,double frame,
-                        const std::map<std::string,double>& variables,std::string& error) {
+                        const std::map<std::string,double>& variables,std::string& error,
+                        double grayscale) {
     if(id.empty()){error="missing E-mote layer id";return false;}
+    if(!std::isfinite(grayscale) || grayscale<0)grayscale=0;
+    const bool gray=grayscale>0;
+    const std::string gray_value=gray?std::to_string(std::clamp(grayscale,0.0,1.0)):std::string();
     std::vector<EmoteSceneLayer> layers;if(!Evaluate(frame,variables,layers,error))return false;
     std::set<std::string> current;
     std::set<std::string> pictures;
@@ -239,8 +243,11 @@ bool EmoteScene::Render(Compositor& c,const std::string& id,double frame,
                 if(!c.SetPixels(part,image.rgba.data(),image.width,image.height)){error="E-mote texture upload failed";return false;}
                 installed_[part]=image_key;
             }
-            c.SetProps(part,{{"left",std::to_string(-image.origin_x-l.origin_x)},
-                {"top",std::to_string(-image.origin_y-l.origin_y)}});
+            std::map<std::string,std::string> part_props{
+                {"left",std::to_string(-image.origin_x-l.origin_x)},
+                {"top",std::to_string(-image.origin_y-l.origin_y)}};
+            if(gray)part_props["grayscale"]=gray_value;
+            c.SetProps(part,part_props);
             if(!l.mesh.empty()) {
                 // Scale the normalized warped grid into icon-local pixels; uv
                 // stays the identity grid the icon texture is sampled through.

@@ -16,7 +16,7 @@ void LayerEffect::Set(const std::map<std::string,std::string>& attrs) {
         parameters[v.first]=v.second;
         if(v.first=="shader")shader=v.second;
         else if(v.first=="negative")negative=v.second!="0";
-        else if(v.first=="grayscale")grayscale=v.second!="0";
+        else if(v.first=="grayscale")grayscale=std::clamp(std::strtof(v.second.c_str(),nullptr),0.0f,1.0f);
         else if(v.first=="colormultiply")multiply=std::strtoul(v.second.c_str(),nullptr,0)&0xffffff;
         else if(v.first=="layermode")blend=v.second.empty()?"normal":v.second;
         else if(v.first=="intermediate_render")intermediate=std::atoi(v.second.c_str());

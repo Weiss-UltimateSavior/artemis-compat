@@ -27,7 +27,7 @@
 | **音频** | **stb_vorbis 分块流 + OpenSL ES 播放器**：BGM(循环)/SE/语音（`splay`/`seplay`/`voplay`）；`_a`→`_b` 曲目接续；逻辑声道 + 定时增益/声像与交叉淡化（`sfade`/`sxfade`/`sepan`…）；`[wait se=]`、`setonsoundfinish`；生命周期静音 |
 | **视频** | **FFmpeg（可选）**解复用/解码：全屏或指定图层、循环、等待与取消键 |
 | **存档** | Pluto 值图原生编解码；BOWS/1003 变量/图层日志与 BOWG 全局银行导入（经游戏 `onLoad` 恢复）；`save` 写独立 ARCV 兼容检查点（原子写入 + 校验）；场景 PNG 缩略图 |
-| **E-mote** | PSB/MDF 解码、RL/raw/CI8 贴图、有限场景求值与 GLES 绘制、`EmotePlayer` 播放器 + `createEmoteLayer`/`getEmoteLayer`（复杂模型/网格/物理/加密 PSB 明确不支持） |
+| **E-mote** | PSB/MDF 解码、RL/raw/CI8 贴图、有限场景求值与 GLES 绘制、`EmotePlayer` 播放器（坐标/缩放/旋转/颜色/**灰度**/差分变量/淡入淡出与 blend 过渡/逐帧 `step`）+ `createEmoteLayer`/`getEmoteLayer`（复杂模型/网格/物理/加密 PSB 明确不支持） |
 | **输入** | 归一化键事件（`isDown`/`isPush`/`isDecide`/边沿）、触摸/tap、slider 拖拽、事件过滤器 |
 | **JNI** | 六接口导出 + ANativeActivity + DebugBridge.nativeInstall 引导 |
 | **日志** | `OutputLog(level,msg)` → `Artemis` tag / stderr；宿主 `SetLogSink` 次级输出钩子；tag[trace] 便于移植排障 |

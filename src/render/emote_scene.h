@@ -21,8 +21,11 @@ public:
     bool Load(std::shared_ptr<const EmoteModel> model,std::string& error);
     bool Evaluate(double frame,const std::map<std::string,double>& variables,
                   std::vector<EmoteSceneLayer>& output,std::string& error) const;
+    // grayscale (0..1) is applied to the textured part layers when > 0; the
+    // E-mote player's SetGrayscale drives it.
     bool Render(Compositor& compositor,const std::string& id,double frame,
-                const std::map<std::string,double>& variables,std::string& error);
+                const std::map<std::string,double>& variables,std::string& error,
+                double grayscale=0);
     // Delete every layer this scene installed under id (the bare container id
     // itself is the caller's — the player removes it via its own RemoveLayers).
     void Remove(Compositor& compositor,const std::string& id);

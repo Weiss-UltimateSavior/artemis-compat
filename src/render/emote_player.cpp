@@ -173,20 +173,20 @@ double EmotePlayer::TimelineTotalFrames(const std::string& label) const {
     return timeline->last_time >= 0 ? timeline->last_time : timeline->loop_end;
 }
 
-bool EmotePlayer::FadeInTimeline(const std::string& label, double duration_ms, int flags,
+bool EmotePlayer::FadeInTimeline(const std::string& label, double duration_ms, double ease,
                                  std::string& error) {
-    auto* entry = EnsurePlaying(label, flags, 0.0, error);
+    auto* entry = EnsurePlaying(label, kTimelineParallel, 0.0, error);
     if (!entry) return false;
-    entry->blend.Set(1.0, duration_ms, 0);
+    entry->blend.Set(1.0, duration_ms, ease);
     error.clear();
     return true;
 }
 
-bool EmotePlayer::FadeOutTimeline(const std::string& label, double duration_ms,
+bool EmotePlayer::FadeOutTimeline(const std::string& label, double duration_ms, double ease,
                                   std::string& error) {
     for (auto& entry : playing_) {
         if (entry.first != label) continue;
-        entry.second.blend.Set(0.0, duration_ms, 0);
+        entry.second.blend.Set(0.0, duration_ms, ease);
         entry.second.fade_out_stop = true;
         error.clear();
         return true;
@@ -197,10 +197,16 @@ bool EmotePlayer::FadeOutTimeline(const std::string& label, double duration_ms,
 
 bool EmotePlayer::SetTimelineBlendRatio(const std::string& label, double ratio,
                                         std::string& error) {
+    return SetTimelineBlendRatio(label, ratio, 0, 0, false, error);
+}
+
+bool EmotePlayer::SetTimelineBlendRatio(const std::string& label, double ratio,
+                                        double transition_ms, double ease, bool fade_out_stop,
+                                        std::string& error) {
     for (auto& entry : playing_) {
         if (entry.first != label) continue;
-        entry.second.blend.Set(std::clamp(ratio, 0.0, 1.0), 0, 0);
-        entry.second.fade_out_stop = false;
+        entry.second.blend.Set(std::clamp(ratio, 0.0, 1.0), transition_ms, ease);
+        entry.second.fade_out_stop = fade_out_stop;
         error.clear();
         return true;
     }
@@ -308,6 +314,23 @@ double EmotePlayer::GetVariable(const std::string& label, bool* found) const {
     return it->second.value;
 }
 
+bool EmotePlayer::SetVariableDiff(const std::string& label, const std::string& pair,
+                                  double value, double transition_ms, double ease,
+                                  std::string& error) {
+    if (!variables_.count(label)) {
+        error = "unknown E-mote variable: " + label;
+        return false;
+    }
+    if (!variables_.count(pair)) {
+        error = "unknown E-mote variable: " + pair;
+        return false;
+    }
+    variables_[label].Set(value, transition_ms, ease);
+    variables_[pair].Set(-value, transition_ms, ease);  // difference pair
+    error.clear();
+    return true;
+}
+
 void EmotePlayer::SetCoord(double x, double y, double transition_ms, double ease) {
     coord_x_.Set(x, transition_ms, ease);
     coord_y_.Set(y, transition_ms, ease);
@@ -332,6 +355,10 @@ uint32_t EmotePlayer::GetColor() const {
     return (static_cast<uint32_t>(a) << 24) | color_rgb_;
 }
 
+void EmotePlayer::SetGrayscale(double value, double transition_ms, double ease) {
+    grayscale_.Set(std::clamp(value, 0.0, 1.0), transition_ms, ease);
+}
+
 void EmotePlayer::GetCoord(double* x, double* y) const {
     if (x) *x = coord_x_.value;
     if (y) *y = coord_y_.value;
@@ -350,6 +377,12 @@ void EmotePlayer::Show() { hidden_ = false; }
 
 void EmotePlayer::Hide() { hidden_ = true; }
 
+void EmotePlayer::Step() {
+    // One 60 fps frame; kFramesPerMillisecond maps frames 1:1, so the ms value
+    // is the frame duration in milliseconds.
+    Progress(1.0 / kFramesPerMillisecond);
+}
+
 void EmotePlayer::Progress(double delta_ms) {
     if (!model_) return;
     if (!(delta_ms > 0)) delta_ms = 0;
@@ -362,6 +395,7 @@ void EmotePlayer::Progress(double delta_ms) {
     scale_x_.Advance(delta_ms);
     scale_y_.Advance(delta_ms);
     alpha_.Advance(delta_ms);
+    grayscale_.Advance(delta_ms);
     for (auto& v : variables_) v.second.Advance(delta_ms);
     bool freed = false;  // a slot opened for the sequential queue
     for (auto it = playing_.begin(); it != playing_.end();) {
@@ -399,7 +433,8 @@ void EmotePlayer::Progress(double delta_ms) {
 
 bool EmotePlayer::IsAnimating() const {
     if (coord_x_.animating() || coord_y_.animating() || rot_.animating() ||
-        scale_x_.animating() || scale_y_.animating() || alpha_.animating())
+        scale_x_.animating() || scale_y_.animating() || alpha_.animating() ||
+        grayscale_.animating())
         return true;
     for (const auto& v : variables_)
         if (v.second.animating()) return true;
@@ -415,6 +450,7 @@ void EmotePlayer::Skip() {
     scale_x_.Finish();
     scale_y_.Finish();
     alpha_.Finish();
+    grayscale_.Finish();
     for (auto& v : variables_) v.second.Finish();
     bool freed = false;
     for (auto it = playing_.begin(); it != playing_.end();) {
@@ -449,6 +485,7 @@ void EmotePlayer::Pass() {
     scale_x_.Finish();
     scale_y_.Finish();
     alpha_.Finish();
+    grayscale_.Finish();
     for (auto& v : variables_) v.second.Finish();
     for (auto& e : playing_) e.second.blend.Finish();
 }
@@ -496,7 +533,7 @@ bool EmotePlayer::Render(Compositor& compositor, const std::string& id, std::str
                                              {"visible", hidden_ ? "0" : "1"},
                                              {"reversex", mirror_ ? "1" : "0"}};
     compositor.SetProps(id, props);
-    return scene_.Render(compositor, id, base_frame_, ComposeVariables(), error);
+    return scene_.Render(compositor, id, base_frame_, ComposeVariables(), error, grayscale_.value);
 }
 
 bool EmotePlayer::Update(double now_ms, Compositor* compositor, const std::string& id) {

@@ -879,9 +879,14 @@ int main(int argc, char** argv) {
     Check(lua.DoString("assert(e:createEmoteLayer{id='x',files={'missing.psb'}}==nil)", "no compositor"),
           "createEmoteLayer needs a compositor");
 
-    // A synthetic PSB inside its own pack drives the full success path.
+    // A synthetic PSB inside its own pack drives the full success path. The
+    // local document adds a second variable so the native difference pair
+    // (SetVariableDiff) has two model variables to drive.
+    auto emote_document = emote_fixture::PlayerDocument();
+    emote_document.root.object["metadata"].object["variableList"].array.push_back(
+        emote_fixture::O({{"label", emote_fixture::S("partner")}}));
     const std::map<std::string,std::vector<uint8_t>> emote_files = {
-        {"emote.psb", emote_fixture::EncodePsb(emote_fixture::PlayerDocument())}
+        {"emote.psb", emote_fixture::EncodePsb(emote_document)}
     };
     std::vector<unsigned char> emote_pack;
     auto eu32=[&](uint32_t v){ for(int i=0;i<4;++i) emote_pack.push_back((v>>(i*8))&255); };
@@ -908,7 +913,7 @@ int main(int argc, char** argv) {
         assert(e:getEmoteLayer('m1'))
         assert(m:countMainTimelines()==2)
         assert(m:getDiffTimelineLabelAt(0)=='delta')
-        assert(m:countVariables()==1 and m:getVariableLabelAt(0)=='expression')
+        assert(m:countVariables()==2 and m:getVariableLabelAt(0)=='expression' and m:getVariableLabelAt(1)=='partner')
         assert(m:playTimeline('once'))
         assert(m:isTimelinePlaying('once') and not m:isTimelinePlaying('delta'))
         assert(m:getTimelineTotalFrameCount('once')==60)
@@ -918,6 +923,18 @@ int main(int argc, char** argv) {
         assert(m:isTimelinePlaying('delta'))
         assert(m:setVariable('expression',5) and m:getVariable('expression')==5)
         local ok,err=m:setVariable('missing',1);assert(ok==false and err)
+        m:setScale(1.5,0,0)                          -- native form: value, time, ease
+        local sx,sy=m:getScale();assert(sx==1.5 and sy==1.5)
+        m:setScale(2,3,0,0)                          -- per-axis extension
+        sx,sy=m:getScale();assert(sx==2 and sy==3)
+        m:setGrayscale(0.5,0,0)
+        assert(m:setVariableDiff('expression','partner',4,0,0))
+        assert(m:getVariable('expression')==4 and m:getVariable('partner')==-4)
+        local dok,derr=m:setVariableDiff('expression','missing',1,0,0);assert(dok==false and derr)
+        assert(m:fadeInTimeline('delta',150,0))      -- fade ease travels as a float
+        assert(m:fadeOutTimeline('delta',150,0))
+        assert(m:setTimelineBlendRatio('delta',0.5,100,0))
+        m:step()                                     -- one 60 fps frame
         m:startWind(1,2,3)                           -- unregistered physics: stub, no error
         stale=m
     )","emote lua"),"E-mote proxy playback through the bridge");
