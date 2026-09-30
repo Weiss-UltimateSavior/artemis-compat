@@ -475,7 +475,10 @@ void EngineThreadMain(ANativeActivity *activity) {
                         }
                         LOGI("queued [%s] file=%s label=%s",
                              name.c_str(), file.c_str(), label.c_str());
-                        runner.Jump(file, label);
+                        // A queued call keeps its return frame (the framework's
+                        // delay chain ends in [return]); only jump discards it.
+                        if (name == "call") runner.Call(file, label);
+                        else runner.Jump(file, label);
                     } else {
                         lua.DispatchTag(name, attrs, false);
                     }

@@ -147,7 +147,8 @@ int RunDrive(const std::string &pack, const std::string &osName, int frames,
                 }
                 Log(kLogInfo, "queued [" + name + "] file=" + file +
                                   " label=" + label);
-                runner->Jump(file, label);
+                if (name == "call") runner->Call(file, label);
+                else runner->Jump(file, label);
             } else {
                 lua->DispatchTag(name, attrs, false);
             }

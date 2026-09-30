@@ -228,7 +228,13 @@ bool AsbRunner::Call(const std::string &file, const std::string &label) {
     // The resume < size guard keeps a Lua-originated estag call whose runner
     // sits at a stale halt from pushing a return into a dead region.
     const size_t resume = (pc_pending_ || !executing_) ? pc_ : pc_ + 1;
-    const bool push = loaded_ && resume < script_.lines.size();
+    // The caller is valid whenever a script image is present, even when the
+    // flow was discarded by a save load (DiscardFlow keeps current_file_/pc_
+    // but clears loaded_). The framework's post-load quickjump call must
+    // still push its return frame, or the restored scenario's final [return]
+    // ends in an empty stack and halts the runner (every later click dead).
+    const bool have_caller = !current_file_.empty() && !script_.lines.empty();
+    const bool push = have_caller && resume < script_.lines.size();
     if (push) {
         Frame frame{current_file_, resume, halted_, lua_, {}};
         // The caller's wait travels with the frame and is handed back when

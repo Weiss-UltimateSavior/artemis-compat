@@ -160,6 +160,11 @@ int main() {
              "*other\n[stepP4]\n[return]\n"},
             // event frame: BeginEvent/EndEvent around an interrupt
             {"emain.iet", "*start\n[stepE1]\n[stepE2]\n[return]\n"},
+            // post-discard call: the runner's flow is dropped while a script
+            // image is still present; a Lua-originated call must keep its
+            // caller frame so the callee's [return] resumes here.
+            {"post.iet",
+             "*start\n[stepP0]\n[stepP1]\n[return]\n*sub2\n[stepS2]\n[return]\n"},
             // omitted-file jump targets a label in the current file (official
             // same-file jump semantics); stepDead must be skipped
             {"same.iet",
@@ -294,6 +299,33 @@ int main() {
         Run(runner, lua);
         artc::SetLogSink(nullptr);
         Check(trace.count("asb: load emain.iet") >= 2, "script re-parsed on re-entry");
+    }
+
+    // ---- 5b) post-DiscardFlow call keeps its return frame ----------------
+    // Real save-load regression: LoadSnapshot discards the flow, then the
+    // framework's quickjump calls into the story whose top-level blocks end
+    // with [return]. Without the frame the return halts the runner and every
+    // later click is dead.
+    {
+        Trace trace;
+        artc::SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (post-discard call)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        Check(runner.Jump("post.iet", "start"), "load post.iet");
+        runner.ExecuteLine(lua);   // *start
+        runner.ExecuteLine(lua);   // [stepP0]
+        runner.DiscardFlow();
+        Check(!runner.Loaded() && runner.Halted(), "discard before post-load call");
+        Check(runner.Call("post.iet", "sub2"), "post-discard call accepted");
+        Check(runner.StackFiles().size() == 2, "post-discard call keeps its caller frame");
+        Run(runner, lua);
+        artc::SetLogSink(nullptr);
+        Check(trace.count("stepP0") == 1, "caller step ran before the call");
+        Check(trace.count("stepS2") == 1, "callee body ran");
+        Check(runner.StackFiles().size() == 1,
+              "callee return popped the caller frame instead of halting empty");
     }
 
     // ---- 6) omitted-file jump: in-file then cross-file label resolution ----
