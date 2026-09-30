@@ -96,6 +96,15 @@ public:
     bool Snapshot(SnapshotImage& output) const;
     void SetProps(const std::string &id, const std::map<std::string, std::string> &attrs);
     void DeleteLayer(const std::string &id);
+    // E-mote stencil composite: render the named layers' alpha into the
+    // stage-sized mask texture selected by `key` and return it (0 when GL is
+    // unavailable or no layer drew). The mask is sampled in stage space by
+    // masked layers; distinct keys keep distinct masks alive across a frame.
+    uint32_t RenderStageMask(int key, const std::vector<std::string> &ids);
+    // Attach (texture != 0) or clear (texture == 0) the stage mask of a layer.
+    void SetLayerStageMask(const std::string &id, uint32_t texture);
+    // Draw-order hint (smaller = earlier/behind; 0 = default id order).
+    void SetLayerPaint(const std::string &id, int paint);
 
     // ---- text (M2.2 message layer pipeline) ----
     // Load a TTF/OTF from the pack chain (font/xxx.ttf in game data).
@@ -288,6 +297,12 @@ private:
     GlProgram prog_{};
     TransProgram tprog_{};
     bool gl_ready_ = false;
+    // E-mote stencil composite: a stage-sized alpha texture rendered
+    // from the scene's mask layers and sampled per masked layer. One target
+    // per mask label set (keyed by the caller) so several masks can coexist.
+    struct StageMaskTarget { uint32_t fbo = 0, texture = 0; };
+    std::map<int, StageMaskTarget> stage_masks_;
+    void ReleaseStageMaskGl();
 
     // [prohibit]/[wordparts]/[indent] configuration (empty = documented default)
     std::set<uint32_t> prohibit_head_, prohibit_foot_, wordparts_;

@@ -69,6 +69,7 @@ uniform vec4 artc_rect;
 uniform vec2 artc_mask_size;
 uniform float artc_clip;
 uniform float artc_use_mask;
+uniform float artc_mask_alpha;
 void main() {
     vec2 local=(artc_inverse*vec3(resultCoord1*artc_stage,1.0)).xy;
     float alpha=1.0;
@@ -77,7 +78,7 @@ void main() {
     if(artc_use_mask>0.5) {
         vec2 uv=local/artc_mask_size;
         if(uv.x<0.0 || uv.y<0.0 || uv.x>=1.0 || uv.y>=1.0)alpha=0.0;
-        else {vec4 m=texture2D(artc_mask,uv);alpha*=m.r*m.a;}
+        else {vec4 m=texture2D(artc_mask,uv);alpha*=artc_mask_alpha>0.5?m.a:m.r*m.a;}
     }
     gl_FragColor=texture2D(artc_fore,resultCoord1)*alpha;
 })";
@@ -269,6 +270,7 @@ bool LayerShaders::End(size_t depth,const LayerEffect& effect,uint32_t parent,bo
         glUniform4fv(glGetUniformLocation(p,"artc_rect"),1,coverage.rect);
         glUniform2f(glGetUniformLocation(p,"artc_mask_size"),std::max(1,coverage.mask_width),std::max(1,coverage.mask_height));
         Uniform(p,"artc_clip",coverage.clip);Uniform(p,"artc_use_mask",coverage.mask!=0);
+        Uniform(p,"artc_mask_alpha",coverage.mask_alpha?1.f:0.f);
     }
     glEnable(GL_BLEND);
     if(effect.blend=="add")glBlendFuncSeparate(GL_ONE,GL_ONE,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);

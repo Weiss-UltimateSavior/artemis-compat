@@ -73,7 +73,7 @@
 | E6 | **完成**：v2 body 解密、宿主 seed 钩子、`lzfs` LZ4 帧；整包 `EmoteFilterTexture` 固定 key 路径按需 |
 | E7 | 维持单文件（参考宿主同样要求 exactly one）；无拆分样本 |
 | E8 | **完成（桌面格式）**：图集裁切 + DXT1/DXT3/16bit（4444/5551/5650）/A8L8/RGBX8 + mip 链容错，均有合成回归；ETC1/PVRTC 无命中样本，维持显式拒绝 |
-| E9 | **部分**：per-frame `color`（MODULATE2X 乘法）、blank `w:h:ox:oy` 描述符、`priority` 时间变序绘制、`bm` 混合模式（add/subtract/multiply/screen）、stencil 节点子树照常求值（mask 合成未做，呈"未裁剪"）已落地；真机立绘已渲染 |
+| E9 | **完成（本机验证）**：per-frame `color`、blank 描述符、`priority`、`bm` 混合、stencil/mask 合成（按标签集独立 stage 蒙版 + alpha 裁剪 + 未绘制则禁用）、HOLD 语义与 1ms 时间容差；meshSync 无载荷（结项）、粒子无样本 |
 | E10 | **完成**：眨眼/选择器/attrcomp；clampControl/talkLabel 等待证据 |
 | E11 | **完成**：MODULATE2X 颜色 tint + 模型镜像位 |
 | E12 | **决策**：由 EmoteScene 内部覆盖（游戏脚本无调用），Lua 不暴露 |
@@ -351,17 +351,80 @@ krkrsdl3 对照：其只支持 `RL`/`none` 与 RGBA8/调色板展开，格式上
 - **`Animated::Set(v, 0, …)` 与 `Animated(v)` 现在同步写 `target`**：此前
   `Skip()/Pass()` 的 `Finish()` 会把 setScale/setCoord/setColor 的即时值
   全部归零，立绘整体不可见（实机主症状）。
-- 类型 12 stencil 节点不再丢弃子树：mask 层本身不绘制、子节点照常渲染；
-  **stencil 合成（mask 裁剪）仍未实现**，部分模型的脸部会被未裁剪的
-  mask/纯色部件覆盖。
 - HOLD（type 0）帧：节点自身不绘制，但子节点照常递归（对齐参考宿主
   `visit_layer` 无条件访问 children）。
 
-### 剩余
+### stencil/mask 合成（已落地）
 
-- stencil/mask 合成：需要按 mask 标签把 mask 层渲染到 stage 空间蒙版并在
-  合成阶段裁剪；当前为"未裁剪"降级（实机脸部可见色块）。
-- `meshSyncChild`、粒子、帧曲线数值应用：无命中样本，维持显式拒绝/跳过。
+- 求值期按参考语义传播 `stencilType & 0x4 + stencilCompositeMaskLayerList`：
+  后代继承，声明节点替换整张列表；容器自身不绘制、子节点照常渲染。
+- 绘制期把 mask 标签解析到最近的同名可绘制 part（参考宿主按 source_label +
+  中心距离匹配），将该 part 及其子树渲染进 **stage 空间蒙版纹理**
+  （`Compositor::RenderStageMask(key, ids)`，每个标签集一张，`SetLayerStageMask`
+  挂到被裁剪 part；`LayerEffect.stage_mask` 走 coverage 通道，按蒙版
+  **alpha** 乘算）。
+- mask 源未绘制时按参考（krkrsdl3）"蒙版层未绘制 → hasStencil=false"处理：
+  不挂蒙版、保持未裁剪，而不是用空蒙版把部件裁没。
+- 回归：合成标签传播（emote_regressions）、GL 蒙版裁剪像素断言
+  （compositor_regressions `ARTC_TEST_CGL`）。
+
+### meshSyncChild / 粒子（结项结论）
+
+- 全部 132 个真实立绘都带 `meshTransform=1`、`meshSyncChildMask`
+  （0x8 形状位 10804 处）、`meshCombine=1`（2966 处），但 **全部模型的
+  `mesh.bp`/`mesh.cc` 载荷为空（bp_nonempty=0, cc_nonempty=0）**——没有任何
+  可传播/可合并的形变数据，故 meshSync 在上述样本上是 no-op；若未来样本带
+  非空 bp 且形状位开启，Evaluate 会一次性日志提示"child mesh deformation
+  not propagated"，避免静默。
+- 粒子：`particleMotionList`/`particleMaxNum` 在真实模型中零命中，维持显式
+  跳过（文档化）。
+
+### 本机（macOS 宿主）验证与修复（2026-09-30 晚间）
+
+- 给 `artemis-mac` 增加开发用注入：`--tap x,y@frame`（按 60fps 帧号注入
+  stage 坐标点击，模拟真实 touch：hover + press + release + click）与
+  `--snapshot out.png@frame`（全分辨率合成快照）。本地即可复现存/读档与
+  渲染问题，不再依赖真机。
+- 用官方内核同场景存档缩略图对照，确认脸部被盖的根因是两处缺陷并已修复：
+  1. **stage 蒙版纹理被所有标签集共用**：每次 `RenderStageMask` 覆盖同一张
+     纹理，所有被裁剪部件实际采样到"最后一次渲染的蒙版" → 脸部被错误裁剪/
+     出现色块。改为按标签集分配独立蒙版纹理（`RenderStageMask(key, ids)`）。
+  2. **蒙版解析是 O(部件×图层) 的 `EffectiveRect`**（每次调用都走祖先链）：
+     双立绘场景掉到约 3fps（300 帧耗时 100 秒），表现为"点击卡死"。改为
+     每帧先缓存所有部件中心（O(n)），再按标签分组匹配，恢复满帧。
+- 本机复现结论（全分辨率快照）：标题→读取存档→槽位→YES 确认→读档成功
+  （`load: checkpoint restored`）；游戏内 Save→槽位→覆盖确认→写档成功
+  （`save: checkpoint save0004.dat committed`），存档缩略图正常。
+- **meshSyncChild 形状形变已落地**（此前的"无载荷"结论是错的：`eye_pos`/
+  `mabuta`/`hi_pos`/`eyebrow_pos` 等帧携带 4x4 Bezier 控制网格）：
+  求值期按 `meshTransform` + 形状位建立形变作用域（含 blank/图标
+  extent、`inheritMask` 形状位挂起），渲染期对子部件生成 8x8 形变网格。
+- **变换模型按官方重构（本轮根因）**：官方在一个 motion player 内按
+  `inheritMask` 组合线性状态（翻转移位/旋转/缩放/剪切各自独立），部分掩码
+  （如 0x200081B 不含缩放位）要相对 **motion 根** 重建，嵌套 motion 以进入
+  节点的仿射为新根；子层继承父层仿射，除非父层带 0x400000（透明父级）。
+  旧实现"父链全量乘法"把表情/头发的旋转缩放错误地压到脸部件/脖子/追加
+  部件上，导致贴图错位成硬边色块。现在求值期计算每个节点的绝对仿射并由
+  部件层携带（布局层恒等），颈部/眼皮/追加部件的位置、朝向与官方一致。
+- **后层绘制序**：官方同场景基准里后发在人物之后、脖子/下巴之后；新增合成器
+  `paint` 提示（`SetLayerPaint`，小于 0 先画/在后）：`後髪`=-1、
+  头发下的 `追加パーツ`=-2、`■首`=-3（均为经验规则，待官方 A/B 后固化）。
+- 本机验证：`say_6`/`shi_36` 单模型预览（CGL）和游戏内快照（1920×1080）
+  脸部完整、发型层次正确、无整块色斑；`g1.png` 与修复前对比立绘完全改观。
+- 仍存差异：个别角色的少量 `■追加パーツ` 硬边补片（如 `shi_36` 侧发下的
+  脸脖补片）——其官方的蒙版/层序语义需要官方内核在同一行对话的存档截图
+  对照后定规则（设备接回后验证）。
+
+### 备注
+
+- 尾部 HOLD 语义：动作用尽后**保持上一有效帧继续绘制**（官方立绘长时间常驻），
+  并用 1ms 帧时间容差消除嵌套时钟浮点误差（此前会冻结在 60.999 帧、恰好
+  掩盖该语义）。
+- 真机"点击没反应"实为上面的 3fps 回归；"画面被缩小/切后台重启"属于宿主的
+  窗口尺寸与进程策略（引擎 stage 固定 1920x1080，本机快照已确认），待设备
+  接回后在 TyranorNext 侧核对。
+- 早期用 `emote_preview` 默认姿势推断的"后发绘制序"问题，在全流程（带游戏
+  时间线/变量）下不再出现，判定为预览工具默认状态差异，不再作为引擎缺陷。
 
 ### 验收标准
 

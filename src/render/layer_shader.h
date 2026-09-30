@@ -13,10 +13,18 @@ struct LayerEffect {
     float grayscale=0.0f;
     uint32_t multiply=0xffffff;
     int intermediate=0;
+    // Explicit draw-order hint (smaller = earlier/behind). 0 = default order.
+    // E-mote rear layers (back hair) use -1; the compositor sorts by this
+    // before the id order while everything else keeps the id semantics.
+    int paint=0;
+    // E-mote stencil composite: the alpha of this stage-space mask texture is
+    // multiplied into the layer (0 = no mask). Set through
+    // Compositor::SetLayerStageMask / RenderStageMask, not through props.
+    uint32_t stage_mask=0;
     std::map<std::string,std::string> parameters;
     bool Active() const {
         return !shader.empty() || blend!="normal" || negative || grayscale>0.0f ||
-               multiply!=0xffffff || intermediate!=0 || !mask.empty();
+               multiply!=0xffffff || intermediate!=0 || !mask.empty() || stage_mask!=0;
     }
     void Set(const std::map<std::string,std::string>& attrs);
 };
@@ -28,6 +36,9 @@ struct LayerCoverage {
     float rect[4]={0,0,0,0};
     uint32_t mask=0;
     int mask_width=0,mask_height=0;
+    // Stage masks (E-mote stencil composites) store coverage in the alpha
+    // channel; file masks carry it in red*alpha.
+    bool mask_alpha=false;
     bool Active() const {return clip || mask;}
 };
 // GLES2 implementation of the native mobile shader ABI. Intermediate surfaces

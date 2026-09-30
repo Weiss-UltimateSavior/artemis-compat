@@ -25,12 +25,14 @@
 #include "script/dialog_request.h"
 #include "script/iet_interpreter.h"
 #include "script/lua_engine.h"
+#include "util/snapshot_image.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -43,6 +45,25 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr int kKeyTap = 1;
+
+// Dev-only scripted taps: `artemis-mac <game> --tap x,y@frame ...` injects a
+// stage-space click at the given 60 fps frame, mirroring `artc drive --tap`
+// so save/load flows can be reproduced locally without a device.
+struct ScriptedTap {
+    float x = 0, y = 0;
+    long long frame = 0;
+};
+std::vector<ScriptedTap> g_scripted_taps;
+long long g_frame_index = 0;
+// Dev-only frame snapshot: --snapshot <out.png>@<frame> writes the composited
+// stage at that frame (full resolution ground truth for local repro).
+struct ScriptedSnapshot {
+    std::string path;
+    long long frame = 0;
+};
+std::vector<ScriptedSnapshot> g_snapshot_list;
+long long g_snapshot_frame = 0;
+std::string g_snapshot_path;
 
 // Set while a native [dialog] input box is up so the frame timer does not
 // re-enter the engine from inside the nested modal run loop.
@@ -62,6 +83,7 @@ struct Engine {
     bool booted = false;
     uint64_t drawn_rev = ~0ull;   // redraw gate: last presented layer revision
     bool exit_requested = false;
+    bool snapshot_pending = false;
 
     // view metrics: points for input mapping, backing pixels for glViewport
     float pt_w = 1280, pt_h = 720;
@@ -279,6 +301,40 @@ struct Engine {
         }
         DrainInput();
         if (ctx && ctx->Started()) {
+            ++g_frame_index;
+            // Dev-only scripted taps (--tap x,y@frame): stage pixels, one-shot.
+            for (auto it = g_scripted_taps.begin(); it != g_scripted_taps.end();) {
+                if (it->frame == g_frame_index) {
+                    Log(kLogInfo, "mac host: scripted tap " + std::to_string(int(it->x)) + "," +
+                                      std::to_string(int(it->y)) + " @" + std::to_string(g_frame_index));
+                    // Mirror a real tap: move + press + release, then ClickAt.
+                    // Nudge the pointer first so the hover/rollover pass always
+                    // runs (HoverMove only reacts to position changes).
+                    ctx->lua().SetMousePoint(1, 1);
+                    ctx->lua().SetMousePoint(it->x, it->y);
+                    ctx->lua().PushKeyDown(kKeyTap);
+                    ctx->lua().BeginDrag(it->x, it->y);
+                    ctx->lua().PushKeyUp(kKeyTap);
+                    ctx->lua().EndDrag();
+                    ctx->lua().SetTouchCount(0);
+                    ctx->lua().ClickAt(it->x, it->y);
+                    it = g_scripted_taps.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            // Dev-only full-resolution frame snapshots (--snapshot out.png@frame).
+            for (auto it = g_snapshot_list.begin(); it != g_snapshot_list.end();) {
+                if (it->frame == g_frame_index) {
+                    g_snapshot_path = it->path;
+                    snapshot_pending = true;
+                    it = g_snapshot_list.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        if (ctx && ctx->Started()) {
             ctx->lua().RunEnterFrame();
             DrainQueued();
         }
@@ -294,6 +350,18 @@ struct Engine {
             if (drawn_rev != ctx->compositor().Revision() || animating) {
                 Present();
                 drawn_rev = ctx->compositor().Revision();
+            }
+            if (snapshot_pending) {
+                snapshot_pending = false;
+                SnapshotImage image;
+                if (ctx->compositor().Snapshot(image)) {
+                    std::vector<uint8_t> png;
+                    if (image.EncodePng(image.width, image.height, png)) {
+                        std::ofstream out(g_snapshot_path, std::ios::binary);
+                        out.write(reinterpret_cast<const char *>(png.data()), png.size());
+                        Log(kLogInfo, "mac host: snapshot -> " + g_snapshot_path);
+                    }
+                }
             }
             ctx->lua().EndFrame();
         }
@@ -400,6 +468,17 @@ int main(int argc, char **argv) {
         std::string os = "windows";
         for (int i = 2; i < argc; ++i) {
             if (std::strcmp(argv[i], "--os") == 0 && i + 1 < argc) os = argv[++i];
+            else if (std::strcmp(argv[i], "--tap") == 0 && i + 1 < argc) {
+                float x = 0, y = 0;
+                long long frame = 0;
+                if (std::sscanf(argv[++i], "%f,%f@%lld", &x, &y, &frame) == 3)
+                    g_scripted_taps.push_back({x, y, frame});
+            } else if (std::strcmp(argv[i], "--snapshot") == 0 && i + 1 < argc) {
+                char path[1024] = {};
+                long long frame = 0;
+                if (std::sscanf(argv[++i], "%1023[^@]@%lld", path, &frame) == 2)
+                    g_snapshot_list.push_back({path, frame});
+            }
         }
 
         auto engine = std::make_unique<Engine>();

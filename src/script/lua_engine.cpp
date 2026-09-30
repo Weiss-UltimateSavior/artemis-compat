@@ -970,9 +970,15 @@ int LuaEngine::l_isFileExists(lua_State *L) {
     lua_pop(L, 1);
     const char *path = luaL_checkstring(L, 2);
     bool exists=packs && packs->Exists(self->ResolvePackPath(path));
+    std::string save_path;
     if(!exists) {
-        const auto save=SavePath(self->save_dir_,path);std::error_code error;
-        exists=!save.empty() && std::filesystem::is_regular_file(save,error);
+        save_path=SavePath(self->save_dir_,path);std::error_code error;
+        exists=!save_path.empty() && std::filesystem::is_regular_file(save_path,error);
+    }
+    if (getenv("ARTC_SAVE_DEBUG")) {
+        static int logged=0;
+        if(logged++<60) Log(kLogInfo,"save-dbg isFileExists '"+std::string(path)+"' -> "+
+            (exists?"yes":"no")+(save_path.empty()?"":" save='"+save_path+"'"));
     }
     lua_pushboolean(L,exists);
     return 1;
@@ -1143,6 +1149,8 @@ int LuaEngine::l_createEmoteLayer(lua_State *L) {
     // (reference host: model_origin = width/2, height/2), while setCoord
     // shifts the model inside it.
     player->SetLayerSize(layer_w, layer_h);
+    Log(kLogInfo, "emote: create " + id + " file=" + resolved + " box=" +
+                      std::to_string(layer_w) + "x" + std::to_string(layer_h));
     // Replace-in-place: tear the previous same-id layer down first so a stale
     // scene never renders beside the new one.
     const auto old = self->emotes_.find(id);
@@ -1510,7 +1518,7 @@ void LuaEngine::DispatchClick(float x, float y) {
     // A plain click outside an event releases the wait in the branch above.
     const uint64_t event = script_runner_ ? script_runner_->BeginEvent(*this) : 0;
     // touch model: rollover sets btn.cursor first, then the click fires.
-    for (const auto &kv : attrs)     // over
+    for (const auto &kv : attrs)     // over (pressed phase)
         if (kv.first == "over" && !kv.second.empty())
             CallEvent(kv.second, attrs, false);
     // Button dispatch follows the original kernel's two-step model:
@@ -1526,6 +1534,15 @@ void LuaEngine::DispatchClick(float x, float y) {
     lua_getglobal(L_, "_artc_exec");
     if (lua_isstring(L_, -1)) exec = lua_tostring(L_, -1);
     lua_pop(L_, 1);
+    if (getenv("ARTC_CLICK_DEBUG")) {
+        DoString("local b=btn and btn.cursor; local g=btn and btn.name;"
+                 "local i=b and g and btn[g] and btn[g].p[b];"
+                 "_artc_dbg='cursor='..tostring(b)..' name='..tostring(g)..' key='..tostring(i and i.key)", "dbg-query");
+        lua_getglobal(L_, "_artc_dbg");
+        Log(kLogInfo, "click-dbg " + std::string(lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "?") +
+                          " exec='" + exec + "'");
+        lua_pop(L_, 1);
+    }
     if (!exec.empty()) {
         Log(kLogInfo, "click: button exec path id='" + id + "' exec='" + exec + "'");
         // A real engine click event carries the pressed button as `btn` —

@@ -46,13 +46,13 @@ WP7 → E8；WP8 → E15；WP9 → E16；WP11 → E17。
 | WP5 曲线/帧色 | **帧色已落地**：`color`（MODULATE2X，2× 折算后与播放器 tint 相乘）；曲线字段仍只接受不应用（真实模型无 `zcc/ccc/cc` 命中） | |
 | WP8 sync/skipToSync | **部分**：推导 + C++ SkipToSync + 回归；Lua 注册待真机证据 | |
 | WP9 命中测试 | **已落地** | shape/blank/clip 源、rect/circle/point/quad、contains/hitTest |
-| WP10 网格细分 | **部分**：细分比率接通网格输出（默认 1.0 不变）；priority 已落地（时间变序重排）；meshSync 未做 | |
+| WP10 网格细分 | **部分**：细分比率接通网格输出（默认 1.0 不变）；priority 已落地（时间变序重排）；meshSync 无 bp/cc 载荷（结项：仅一次性日志） | |
 | E1 契约文档 | **完成**：`docs/emote-driver-contract.md` | |
 | E5/E12/E13/E17 | **决策完成**（见主计划「落地状态」） | |
-| E14 真机冒烟 | **部分完成**：host 冒烟（常轨脱离/甜蜜女友3）通过；macOS CGL GL 回归（`ARTC_TEST_CGL`）通过；**TyranorNext 实机立绘已渲染**（`libartemis-clean.so` 17 版） | |
-| 真实模型对齐（甜蜜女友3） | **已落地**：win-split 内容（src/icon）、motion 级 parameterize、stencil 子树、深度忽略、空 mesh 占位、blank `w:h:ox:oy`、per-frame color、priority、`bm` 混合、盒中心原点、HOLD 子节点；合成回归覆盖 | |
+| E14 真机冒烟 | **部分完成**：host 冒烟通过；macOS CGL GL 回归通过；TyranorNext 实机曾验证立绘渲染；本机 `artemis-mac --tap/--snapshot` 全流程验证存档/读档/脸部渲染正确 | |
+| 真实模型对齐（甜蜜女友3） | **已落地**：win-split 内容、motion 级 parameterize、stencil 子树、深度忽略、blank `w:h:ox:oy`、per-frame color、priority、`bm` 混合、盒中心原点、HOLD 子节点、stencil 蒙版合成；合成回归覆盖 | |
 | E8 桌面贴图格式 | **已落地**：DXT1/DXT3/16bit/A8L8/RGBX8 + mip 容错（合成回归） | |
-| 实机（TyranorNext） | **已落地**：`Animated::Finish` 归零修复（立绘可见性的主因）、inheritMask 放宽、bm 混合、盒中心偏移、stencil 子树/HOLD 递归；stencil mask 合成为剩余主项 | |
+| 实机（TyranorNext） | **已落地**：`Animated::Finish` 归零修复、inheritMask 放宽、bm 混合、盒中心偏移、stencil 子树/HOLD 递归、stencil 蒙版合成、蒙版纹理独立化、蒙版解析 O(n) 性能修复；本机全流程复验通过 | |
 
 ---
 

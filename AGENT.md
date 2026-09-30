@@ -134,6 +134,9 @@ jni / host（宿主壳）
   （`./build-mac/artemis-mac <游戏目录>`）冒烟，必要时开 `ARTC_TEST_GLES`
   （需 ANGLE）或 `ARTC_TEST_CGL`（macOS 离屏 CGL，无需窗口/ANGLE）：
   `cmake -B build-cgl -DARTC_BUILD_TESTS=ON -DARTC_TEST_CGL=ON && cmake --build build-cgl -j8 --target compositor_regressions && ./build-cgl/tests/compositor_regressions`。
+- mac 宿主支持开发用脚本化输入与快照（本地复现存/读档、渲染问题，不依赖真机）：
+  `./build-mac/artemis-mac <游戏目录> --os android --tap x,y@frame --snapshot out.png@frame`（坐标是 1920x1080 stage 像素，frame 为 60fps 帧号；
+  可用环境变量 `ARTC_CLICK_DEBUG=1` / `ARTC_SAVE_DEBUG=1` 打开点击与存档路径诊断日志）。
 - 已知缺口（Tier 3 补齐中）：AsbRunner / save_storage 故障注入 / iet /
   JNI 生命周期暂无专属回归——改到这些区域时至少跑真机或 mac 宿主冒烟。
 

@@ -97,6 +97,8 @@ public:
     // the unregistered stub; mesh subdivision and physics are not rendered yet.
     void SetMeshDivisionRatio(double ratio);
     double MeshDivisionRatio() const { return mesh_division_ratio_; }
+    // Current base-motion frame (diagnostics/tests).
+    double BaseFrame() const { return base_frame_; }
     // Native createEmoteLayer width/height: the model's coordinate origin sits
     // at the centre of that box (reference host model_origin), before setCoord.
     void SetLayerSize(int width, int height) { layer_w_ = width; layer_h_ = height; }

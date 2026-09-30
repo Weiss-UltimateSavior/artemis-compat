@@ -601,6 +601,23 @@ int main() {
         p=At(2,2);Check(p[0]==0 && p[1]==0 && p[2]==0,"subtract blend clamps dst minus src");
         c.DeleteLayer("31");c.Draw();
     }
+    // E9: stencil composite stage mask — the mask layer's alpha clips the
+    // masked part (RenderStageMask + SetLayerStageMask).
+    {
+        const uint8_t mask_white[4]={255,255,255,255};
+        Check(c.SetPixels("51",mask_white,1,1),"mask source part");
+        c.SetProps("51",{{"left","4"},{"top","4"},{"w","8"},{"h","8"}});c.Draw();
+        const uint32_t stage_mask=c.RenderStageMask(1,{"51"});
+        Check(stage_mask!=0,"render stage mask");
+        Check(c.SetPixels("52",red,1,1),"masked part");
+        c.SetProps("52",{{"w","32"},{"h","32"}});
+        c.SetLayerStageMask("52",stage_mask);
+        c.Draw();
+        Check(At(6,6)[0]>200 && At(20,20)[0]==0,
+            "stage mask keeps the part inside the mask only");
+        c.SetLayerStageMask("52",0);
+        c.DeleteLayer("51");c.DeleteLayer("52");c.Draw();
+    }
     c.SetProps("9",{{"grayscale","0"}});
     Check(messages.DoString("e:tag{'lyshader',id='tint',file='filter.glsl'};e:tag{'lyshader',id='uv',file='uv.glsl'}",
         "load game shader"),"lyshader loads source through the resource resolver");

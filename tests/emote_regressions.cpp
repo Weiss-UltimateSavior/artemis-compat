@@ -200,13 +200,16 @@ static void PlayerTests() {
           "render installs the container and scene layers");
     player.Progress(5000.0/3.0);  // +100 frames on top of the 60 already played
     Check(player.Render(compositor,"p",error),error.c_str());
-    Check(std::abs(compositor.GetLayerInfo("p.000001").left-14.0)<1e-3,
-          "progress advances the base motion at 60 fps");  // 160 frames wraps to 6 → 8+10*0.6
+    // 160 frames wraps to 6 → group coord 8+10*0.6 = 14; the body icon origin
+    // (2,2) offsets the part layer.
+    Check(std::abs(compositor.GetLayerInfo("p.000001.000001.000000").left-12.0)<1e-3,
+          "progress advances the base motion at 60 fps");
     artc::EmotePlayer ticking;
     Check(ticking.Load(model,error),error.c_str());
     Check(ticking.Update(0,&compositor,"q") && compositor.GetLayerInfo("q").found,"update renders");
     Check(ticking.Update(500,&compositor,"q"),error.c_str());  // dt 500 ms → 30 frames → frame 8
-    Check(std::abs(compositor.GetLayerInfo("q.000001").left-16.0)<1e-3,"update ticks wall-clock deltas");
+    Check(std::abs(compositor.GetLayerInfo("q.000001.000001.000000").left-14.0)<1e-3,
+          "update ticks wall-clock deltas");  // frame 8 → 16, minus the 2px icon origin
 
     // progress=false (the createEmoteLayer option): the wall clock is ignored
     // until the script calls progress()/step().
@@ -294,10 +297,11 @@ static void PlayerTests() {
     Check(synced.Load(model,error),error.c_str());
     synced.Progress(10*1000.0/60.0);  // exactly 10 frames
     Check(synced.Render(compositor,"y",error),error.c_str());
-    const float at_sync=compositor.GetLayerInfo("y.000001").left;
+    const float at_sync=compositor.GetLayerInfo("y.000001.000001.000000").left;
     synced.SkipToSync();
     Check(synced.Render(compositor,"y",error),error.c_str());
-    Check(compositor.GetLayerInfo("y.000001").left==at_sync,"skipToSync parks at the sync frame");
+    Check(compositor.GetLayerInfo("y.000001.000001.000000").left==at_sync,
+          "skipToSync parks at the sync frame");
 
     // ComposeVariables is private — observe mixing through the parameterized
     // face icon: body picture is 4px wide, the face 2px ("face") or 4px ("wide").
@@ -834,6 +838,37 @@ int main(int argc,char** argv) {
             if(l.blend=="subtract")subtract=true;
         }
         Check(multiply && subtract,"content bm maps to native blend modes");
+    }
+    {
+        // E9: stencil composite mask labels propagate to a stencil node's
+        // descendants (stencilType bit 0x4 replaces the inherited list); the
+        // stencil node itself stays a non-drawing container.
+        auto mask_doc=emote_fixture::Scene();
+        auto& idle=mask_doc.root.object["object"].object["actor"].object["motion"].object["idle"];
+        auto masked=emote_fixture::Node(0,"masked_part",emote_fixture::A({
+            emote_fixture::Key(0,2,emote_fixture::O({{"src",emote_fixture::S("src/images/face")}})),
+            emote_fixture::Key(11,0)}));
+        auto stencil=emote_fixture::Node(12,"mask_group",emote_fixture::A({
+            emote_fixture::Key(0,2,emote_fixture::O({{"src",emote_fixture::S("src/images/body")}})),
+            emote_fixture::Key(11,0)}),emote_fixture::A({masked}));
+        stencil.object["stencilType"]=emote_fixture::N(5);
+        stencil.object["stencilCompositeMaskLayerList"]=
+            emote_fixture::A({emote_fixture::S("source_mask")});
+        idle.object["layer"]=emote_fixture::A({stencil});
+        auto mask_model=std::make_shared<artc::EmoteModel>();
+        std::string error;
+        Check(mask_model->Load(mask_doc,error),error.c_str());
+        artc::EmoteScene mask_scene;
+        Check(mask_scene.Load(mask_model,error),error.c_str());
+        std::vector<artc::EmoteSceneLayer> mask_layers;
+        Check(mask_scene.Evaluate(0,{},mask_layers,error),"mask model evaluates");
+        bool masked_ok=false,container_ok=false;
+        for(const auto& l:mask_layers) {
+            if(l.label=="masked_part" && l.source=="images" && l.masks.size()==1 &&
+               l.masks[0]=="source_mask")masked_ok=true;
+            if(l.label=="mask_group" && l.source.empty())container_ok=true;
+        }
+        Check(masked_ok && container_ok,"stencil mask labels propagate to descendants");
     }
     const auto fixture=Fixture();artc::PsbDocument doc;std::string error;
     Check(artc::DecodePsb(fixture,doc,error),error.c_str());

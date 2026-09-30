@@ -95,6 +95,21 @@ int LayerZCmp(const Layer& a, const Layer& b) {
     return ZCmp(a.id, b.id);
 }
 
+// Full paint order: explicit paint hints (smaller = earlier/behind) come
+// before the id z order; layers without a hint (0) stay put relative to the
+// id order, negative hints draw behind and positive hints in front.
+bool DrawOrderLess(const Layer *a, const Layer *b) {
+    const int pa = a->effect.paint, pb = b->effect.paint;
+    if (pa != pb) {
+        if (pa == 0) return pb > 0;
+        if (pb == 0) return pa < 0;
+        return pa < pb;
+    }
+    const int c = LayerZCmp(*a, *b);
+    if (c != 0) return c < 0;   // ascending: lower z first
+    return SectionCount(a->id) < SectionCount(b->id);
+}
+
 void Compositor::EffectiveRect(const Layer &l, float *ex, float *ey,
                                float *ea, bool *ev) const {
     float w, h;
@@ -702,11 +717,7 @@ double Compositor::PendingAnimationMs(double now_ms) const {
 std::string Compositor::DescribeDrawList(size_t max_layers) const {
     std::vector<const Layer *> sorted;
     for (const auto &l : layers_) sorted.push_back(&l);
-    std::stable_sort(sorted.begin(), sorted.end(), [](const Layer *a, const Layer *b) {
-        const int c = LayerZCmp(*a, *b);
-        if (c != 0) return c < 0;
-        return SectionCount(a->id) < SectionCount(b->id);
-    });
+    std::stable_sort(sorted.begin(), sorted.end(), DrawOrderLess);
     std::string out = "layers=" + std::to_string(layers_.size()) +
                       " tweens=" + std::to_string(tweens_.size()) +
                       " trans=" + std::to_string(trans_active_ ? 1 : 0) + " |";
@@ -1528,6 +1539,7 @@ void Compositor::ReleaseGl() {
     if (last_frame_tex_) { glDeleteTextures(1, &last_frame_tex_); last_frame_tex_ = 0; }
     if (scene_fbo_) { glDeleteFramebuffers(1, &scene_fbo_); scene_fbo_ = 0; }
     if (scene_tex_) { glDeleteTextures(1, &scene_tex_); scene_tex_ = 0; }
+    ReleaseStageMaskGl();
     if (prog_.program) { glDeleteProgram(prog_.program); prog_.program = 0; }
     if (tprog_.program) { glDeleteProgram(tprog_.program); tprog_.program = 0; }
     trans_active_ = false;
@@ -1597,12 +1609,7 @@ void Compositor::Draw() {
     sorted.clear();
     sorted.reserve(layers_.size());
     for (const auto &l : layers_) sorted.push_back(&l);
-    std::stable_sort(sorted.begin(), sorted.end(),
-                     [](const Layer *a, const Layer *b) {
-                         const int c = LayerZCmp(*a, *b);
-                         if (c != 0) return c < 0;   // ascending: lower z first
-                         return SectionCount(a->id) < SectionCount(b->id);
-                     });
+    std::stable_sort(sorted.begin(), sorted.end(), DrawOrderLess);
 
     glUseProgram(prog_.program);
     glDisableVertexAttribArray(prog_.a_opacity);
@@ -1757,6 +1764,17 @@ void Compositor::Draw() {
                         if(auto mask=masks_.find(l->effect.mask);mask!=masks_.end()) {
                             coverage.mask=mask->second.texture;coverage.mask_width=mask->second.width;coverage.mask_height=mask->second.height;
                         }
+                        // E-mote stencil composite: the stage mask is sampled
+                        // in stage space (identity inverse), independent of the
+                        // layer's own transform.
+                        if(l->effect.stage_mask) {
+                            coverage.mask=l->effect.stage_mask;
+                            coverage.mask_width=stage_w_;coverage.mask_height=stage_h_;
+                            coverage.mask_alpha=true;
+                            const float identity[]={1,0,0,0,1,0,0,0,1};
+                            std::copy_n(identity,9,coverage.inverse);
+                            coverage.clip=false;
+                        }
                     }
                     shaders_.End(depth,l->effect,target,top_down,transform.alpha/inherited,textures,coverage);
                     i=next;continue;
@@ -1819,6 +1837,101 @@ void Compositor::Init(int stage_w, int stage_h) {
     stage_w_ = stage_w;
     stage_h_ = stage_h;
     InitGl();
+}
+
+void Compositor::ReleaseStageMaskGl() {
+    for (auto &entry : stage_masks_) {
+        if (entry.second.fbo) glDeleteFramebuffers(1, &entry.second.fbo);
+        if (entry.second.texture) glDeleteTextures(1, &entry.second.texture);
+    }
+    stage_masks_.clear();
+}
+
+// E-mote stencil composite: draw the named mask layers' alpha into the
+// stage-sized texture for `key`. Mask sources are ordinary part layers (their
+// texture and effective transform are already in the compositor), so this is a
+// second pass over them; the result is sampled in stage space by masked
+// layers. Distinct keys keep distinct masks alive until the next render.
+uint32_t Compositor::RenderStageMask(int key, const std::vector<std::string> &ids) {
+    if (!gl_ready_ || ids.empty()) return 0;
+    StageMaskTarget &target = stage_masks_[key];
+    if (!target.fbo) {
+        glGenTextures(1, &target.texture);
+        glBindTexture(GL_TEXTURE_2D, target.texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, stage_w_, stage_h_, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &target.fbo);
+    }
+    GLint previous = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous);
+    glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           target.texture, 0);
+    glViewport(0, 0, stage_w_, stage_h_);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(prog_.program);
+    glUniform2f(prog_.u_screen, float(stage_w_), float(stage_h_));
+    glUniform1f(prog_.u_top_down, 0);
+    glUniform1i(prog_.u_tex, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glDisableVertexAttribArray(prog_.a_opacity);
+    glVertexAttrib1f(prog_.a_opacity, 1);
+    glEnable(GL_BLEND);
+    // Premultiplied over-compositing accumulates overlapping mask shapes into
+    // one coverage (the reference host draws every mask command).
+    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    bool any = false;
+    for (const auto &id : ids) {
+        const Layer *layer = nullptr;
+        for (const auto &l : layers_) if (l.id == id) { layer = &l; break; }
+        if (!layer || !layer->texture) continue;
+        const auto transform = EffectiveTransform(*layer);
+        if (!transform.visible || transform.alpha <= 0) continue;
+        glUniform1f(prog_.u_alpha, 1);
+        glBindTexture(GL_TEXTURE_2D, layer->texture);
+        const auto p0 = transform.Point(0, 0), p1 = transform.Point(layer->w, 0);
+        const auto p2 = transform.Point(0, layer->h), p3 = transform.Point(layer->w, layer->h);
+        float verts[16] = {
+            p0.first, p0.second, layer->u0, layer->v0,
+            p1.first, p1.second, layer->u1, layer->v0,
+            p2.first, p2.second, layer->u0, layer->v1,
+            p3.first, p3.second, layer->u1, layer->v1,
+        };
+        glVertexAttribPointer(prog_.a_pos, 2, GL_FLOAT, GL_FALSE, 16, verts);
+        glEnableVertexAttribArray(prog_.a_pos);
+        glVertexAttribPointer(prog_.a_uv, 2, GL_FLOAT, GL_FALSE, 16, verts + 2);
+        glEnableVertexAttribArray(prog_.a_uv);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        any = true;
+    }
+    glDisable(GL_BLEND);
+    glBindFramebuffer(GL_FRAMEBUFFER, previous);
+    return any ? target.texture : 0;
+}
+
+void Compositor::SetLayerStageMask(const std::string &id, uint32_t texture) {
+    for (auto &l : layers_) {
+        if (l.id != id) continue;
+        if (l.effect.stage_mask == texture) return;
+        l.effect.stage_mask = texture;
+        ++revision_;
+        return;
+    }
+}
+
+void Compositor::SetLayerPaint(const std::string &id, int paint) {
+    for (auto &l : layers_) {
+        if (l.id != id) continue;
+        if (l.effect.paint == paint) return;
+        l.effect.paint = paint;
+        ++revision_;
+        return;
+    }
 }
 
 #else // host stubs — no GL; keep layer math (rects / z / hit-test) functional
@@ -2011,6 +2124,23 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
 }
 void Compositor::Shutdown() { layers_.clear(); present_cb_ = nullptr; }
 void Compositor::ReleaseGl() { ++revision_; layers_.clear(); tweens_.clear(); tween_set_.clear(); collecting_tweens_ = false; trans_active_ = false; gl_ready_ = false; }
+uint32_t Compositor::RenderStageMask(int, const std::vector<std::string> &) { return 0; }
+void Compositor::SetLayerStageMask(const std::string &id, uint32_t texture) {
+    for (auto &l : layers_) {
+        if (l.id != id) continue;
+        l.effect.stage_mask = texture;
+        ++revision_;
+        return;
+    }
+}
+void Compositor::SetLayerPaint(const std::string &id, int paint) {
+    for (auto &l : layers_) {
+        if (l.id != id) continue;
+        l.effect.paint = paint;
+        ++revision_;
+        return;
+    }
+}
 void Compositor::CaptureFrame() {}
 bool Compositor::Snapshot(SnapshotImage&) const {return false;}
 void Compositor::DrawTransitionOverlay() {}

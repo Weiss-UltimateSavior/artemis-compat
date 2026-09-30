@@ -13,6 +13,38 @@ struct EmoteSceneLayer {
     // Content blend mode (`bm` low nibble, E-mote): empty = normal/alpha,
     // otherwise "add", "subtract", "multiply" or "screen".
     std::string blend;
+    // Stencil composite mask layer labels active for this part (empty = no
+    // mask). Render resolves them to the evaluator's mask source layers.
+    std::vector<std::string> masks;
+    // Shape-sync deformers inherited from ancestor meshTransform nodes
+    // (nearest first). Render bakes them into an 8x8 warped mesh.
+    struct Deformer {
+        double m11=1,m12=0,m21=0,m22=1,tx=0,ty=0;  // part/node space -> domain
+        std::vector<double> points;                // normalized control grid
+        int side=0;
+        double width=0,height=0;                   // extent size
+        double origin_x=0,origin_y=0;              // extent origin
+        double off_x=0,off_y=0;                    // content ox/oy offset
+        // Extent source when the sync node draws a real icon instead of a
+        // blank descriptor: resolved from the icon atlas at render time.
+        std::string source,icon;
+    };
+    // Absolute affine of this node inside the E-mote player. Native E-mote
+    // places every node inside a motion by its own coordinate (the hierarchy
+    // does not accumulate transforms); Render composes the icon offset.
+    double abs_m11=1,abs_m12=0,abs_m21=0,abs_m22=1,abs_tx=0,abs_ty=0;
+    // Node linear state after inheritMask resolution (used when this node
+    // enters a nested motion player).
+    double st_rot=0,st_sx=1,st_sy=1,st_shx=0,st_shy=0;
+    bool st_fx=false,st_fy=false;
+    // Node opacity after inheritMask resolution (nested motion roots).
+    double abs_opa=1;
+    // Provisional draw-order hint derived from the authored labels: back hair
+    // and the skin patches layered under it draw behind the portrait, and the
+    // neck draws behind the chin (observed official shell ordering).
+    int paint_hint=0;
+    std::vector<double> transform_order;
+    std::vector<Deformer> deformers;
     enum class Shape { None, Rect, Circle, Point, Quad };
     Shape shape=Shape::None;
     // Per-frame color (0xRRGGBBAA, MODULATE2X space); 0 = not authored.
