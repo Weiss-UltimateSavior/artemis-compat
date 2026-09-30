@@ -86,6 +86,102 @@ void TestEncryptedHeaderRoundTrip() {
     Check(decoded.root.At("text").string == "hello", "encrypted tree preserved (string)");
 }
 
+void TestHostSeedHook() {
+    const std::vector<uint8_t> bytes = EncryptedFixture(0x00C0FFEEu);
+    artc::SetPsbDecryptSeed(0x00c0ffeeu);
+    artc::PsbDocument decoded;
+    std::string error;
+    const bool ok = artc::DecodePsb(bytes, decoded, error);
+    artc::SetPsbDecryptSeed(0);
+    Check(ok, "host seed hook decodes: " + error);
+    Check(decoded.root.At("answer").Num(-1) == 42, "host seed tree preserved");
+}
+
+// PSB v2: the header has no checksum and the body up to the chunk-offset table
+// is encrypted with the same stream (reference host: emotefile::load).
+std::vector<uint8_t> EncryptedV2Fixture(uint32_t seed) {
+    const artc::PsbDocument doc = SampleDocument();
+    std::vector<uint8_t> plain = emote_fixture::EncodePsb(doc);
+    std::vector<uint8_t> v2(plain.begin(), plain.begin() + 40);
+    v2.insert(v2.end(), plain.begin() + 44, plain.end());  // drop the v3 checksum slot
+    auto rd32 = [&](size_t at) {
+        return uint32_t(v2[at]) | (uint32_t(v2[at + 1]) << 8) |
+               (uint32_t(v2[at + 2]) << 16) | (uint32_t(v2[at + 3]) << 24);
+    };
+    auto wr32 = [&](size_t at, uint32_t v) {
+        for (int i = 0; i < 4; ++i) v2[at + i] = uint8_t(v >> (8 * i));
+    };
+    for (size_t at : {12u, 16u, 20u, 24u, 28u, 32u, 36u}) {
+        const uint32_t v = rd32(at);
+        if (v >= 44) wr32(at, v - 4);
+    }
+    wr32(8, 40);          // offsetEncrypt = header length
+    v2[4] = 2;            // version 2
+    v2[6] = 1;            // encryption flag
+    v2[7] = 0;
+    const uint32_t body_end = rd32(24);
+    std::vector<uint8_t> out = v2;
+    Cipher cipher(seed);
+    cipher.Apply(out.data() + 8, 40 - 8);
+    cipher.Apply(out.data() + 40, body_end - 40);
+    return out;
+}
+
+void TestEncryptedV2Body() {
+    std::vector<uint8_t> bytes = EncryptedV2Fixture(0x0BADF00Du);
+    artc::PsbDocument decoded;
+    std::string error;
+    Check(artc::DecodePsb(bytes, decoded, error), "decode encrypted v2 body: " + error);
+    Check(decoded.root.At("answer").Num(-1) == 42, "v2 tree preserved (number)");
+    Check(decoded.root.At("text").string == "hello", "v2 tree preserved (string)");
+}
+
+// lzfs: LZ4 frame container around the PSB payload.
+std::vector<uint8_t> Lz4Frame(const std::vector<uint8_t> &payload, bool linked, bool compressed) {
+    std::vector<uint8_t> frame = {0x04, 0x22, 0x4D, 0x18};
+    frame.push_back(linked ? 0x40 : 0x60);  // version 01, independent unless linked
+    frame.push_back(0x70);                  // 4 MB block size
+    frame.push_back(0x00);                  // header checksum (skipped)
+    if (compressed) {
+        // single literal-only LZ4 sequence
+        std::vector<uint8_t> block;
+        const size_t n = payload.size();
+        if (n < 15) {
+            block.push_back(uint8_t(n << 4));
+        } else {
+            block.push_back(0xF0);
+            size_t rem = n - 15;
+            while (rem >= 255) { block.push_back(255); rem -= 255; }
+            block.push_back(uint8_t(rem));
+        }
+        block.insert(block.end(), payload.begin(), payload.end());
+        for (int i = 0; i < 4; ++i) frame.push_back(uint8_t(block.size() >> (8 * i)));
+        frame.insert(frame.end(), block.begin(), block.end());
+    } else {
+        const uint32_t length = uint32_t(payload.size()) | 0x80000000u;
+        for (int i = 0; i < 4; ++i) frame.push_back(uint8_t(length >> (8 * i)));
+        frame.insert(frame.end(), payload.begin(), payload.end());
+    }
+    frame.insert(frame.end(), {0, 0, 0, 0});  // end mark
+    return frame;
+}
+
+void TestLz4Containers() {
+    const artc::PsbDocument doc = SampleDocument();
+    const std::vector<uint8_t> plain = emote_fixture::EncodePsb(doc);
+    artc::PsbDocument decoded;
+    std::string error;
+    Check(artc::DecodePsb(Lz4Frame(plain, false, false), decoded, error),
+          "lzfs stored block: " + error);
+    Check(decoded.root.At("answer").Num(-1) == 42, "lzfs stored tree preserved");
+    Check(artc::DecodePsb(Lz4Frame(plain, false, true), decoded, error),
+          "lzfs compressed block: " + error);
+    Check(decoded.root.At("answer").Num(-1) == 42, "lzfs compressed tree preserved");
+    Check(!artc::DecodePsb(Lz4Frame(plain, true, false), decoded, error) &&
+          error.find("lzfs") != std::string::npos,
+          "lzfs linked blocks are rejected");
+}
+
 void TestExplicitSeed() {
     const std::vector<uint8_t> bytes = EncryptedFixture(0x1234ABCDe);
     ::setenv("ARTC_EMOTE_SEED", "0x1234abcd", 1);
@@ -118,6 +214,9 @@ void TestPlainStillDecodes() {
 
 int main() {
     TestEncryptedHeaderRoundTrip();
+    TestHostSeedHook();
+    TestEncryptedV2Body();
+    TestLz4Containers();
     TestExplicitSeed();
     TestChecksumRejectsCorruption();
     TestPlainStillDecodes();

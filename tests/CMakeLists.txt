@@ -143,3 +143,48 @@ if(ARTC_TEST_GLES)
     target_link_libraries(compositor_regressions PRIVATE artemis_core)
     add_test(NAME compositor_regressions COMMAND compositor_regressions)
 endif()
+
+# macOS-native offscreen GL context (CGL pbuffer): exercises the desktop-GL
+# renderer including the builtin grayscale/tint shader without ANGLE or a
+# window. Off by default; enable on Darwin with a GUI session.
+option(ARTC_TEST_CGL "Run compositor regressions on a macOS CGL context" OFF)
+if(ARTC_TEST_CGL)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        message(FATAL_ERROR "ARTC_TEST_CGL is only supported on macOS")
+    endif()
+    if(ARTC_TEST_GLES)
+        message(FATAL_ERROR "ARTC_TEST_CGL and ARTC_TEST_GLES both build compositor_regressions; enable one")
+    endif()
+    # Same pattern as the mac host: the core is recompiled with the desktop GL
+    # backend instead of linking the headless artemis_core.
+    add_executable(compositor_regressions ${ARTC_CORE_SOURCES} compositor_regressions.cpp)
+    target_include_directories(compositor_regressions PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/render
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/third_party)
+    target_compile_features(compositor_regressions PRIVATE cxx_std_17)
+    target_compile_definitions(compositor_regressions PRIVATE
+        ARTC_HAS_GLES=1 ARTC_USE_DESKTOP_GL=1 ARTC_TEST_CGL=1)
+    target_link_libraries(compositor_regressions PRIVATE artemis_deps "-framework OpenGL")
+    if(ARTC_TEST_MOVIE)
+        target_sources(compositor_regressions PRIVATE "${ARTC_TEST_MOVIE}")
+        target_compile_definitions(compositor_regressions PRIVATE
+            ARTC_TEST_MOVIE="${ARTC_TEST_MOVIE}")
+    endif()
+    target_compile_definitions(compositor_regressions PRIVATE
+        ARTC_TEST_DATA="${ARTC_TEST_DATA_DIR}")
+    add_test(NAME compositor_regressions COMMAND compositor_regressions)
+
+    # Dev-only preview: render one E-mote model to PNG on the same offscreen
+    # context, for local layer-order/masking inspection.
+    add_executable(emote_preview ${ARTC_CORE_SOURCES}
+        ${CMAKE_SOURCE_DIR}/tools/emote_preview.cpp)
+    target_include_directories(emote_preview PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/render
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/third_party)
+    target_compile_features(emote_preview PRIVATE cxx_std_17)
+    target_compile_definitions(emote_preview PRIVATE
+        ARTC_HAS_GLES=1 ARTC_USE_DESKTOP_GL=1 ARTC_TEST_CGL=1)
+    target_link_libraries(emote_preview PRIVATE artemis_deps "-framework OpenGL")
+endif()

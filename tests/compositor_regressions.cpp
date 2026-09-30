@@ -7,8 +7,13 @@
 #include "script/lua_engine.h"
 #include "render/video_player.h"
 #include "audio/audio.h"
+#if defined(ARTC_TEST_CGL)
+#include <OpenGL/OpenGL.h>
+#include "render/gles2_headers.h"
+#else
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
+#endif
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -21,6 +26,14 @@
 static void Check(bool ok, const char* why) {
     if (!ok) { std::cerr << why << " GL=" << glGetError() << '\n'; std::exit(1); }
 }
+#if defined(ARTC_TEST_CGL)
+// A drawable-less CGL context has no valid default framebuffer, so "screen"
+// draws go to an offscreen FBO instead (the EGL pbuffer equivalent).
+static GLuint g_default_fbo = 0;
+#define ARTC_DEFAULT_FBO g_default_fbo
+#else
+#define ARTC_DEFAULT_FBO 0
+#endif
 static std::array<unsigned char, 4> Pixel() {
     std::array<unsigned char, 4> p{};
     glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, p.data());
@@ -32,6 +45,30 @@ static std::array<unsigned char,4> At(int x, int y) {
     return p;
 }
 int main() {
+#if defined(ARTC_TEST_CGL)
+    // macOS-native offscreen context (no ANGLE, no window).
+    CGLPixelFormatObj pix = nullptr; GLint npix = 0;
+    CGLPixelFormatAttribute attrs[] = {
+        kCGLPFAAccelerated, kCGLPFAColorSize, (CGLPixelFormatAttribute)24,
+        kCGLPFAAlphaSize, (CGLPixelFormatAttribute)8, (CGLPixelFormatAttribute)0};
+    Check(!CGLChoosePixelFormat(attrs, &pix, &npix) && pix, "choose CGL pixel format");
+    CGLContextObj ctx = nullptr;
+    Check(!CGLCreateContext(pix, nullptr, &ctx) && ctx, "create CGL context");
+    Check(CGLSetCurrentContext(ctx) == kCGLNoError, "make CGL context current");
+    {
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &g_default_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_default_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        Check(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,
+              "screen FBO complete");
+    }
+#else
     EGLDisplay d = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     Check(eglInitialize(d, nullptr, nullptr), "initialize EGL");
     EGLint attrs[] = {EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,
@@ -43,6 +80,7 @@ int main() {
     EGLint ca[] = {EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
     EGLContext ctx = eglCreateContext(d,cfg,EGL_NO_CONTEXT,ca);
     Check(eglMakeCurrent(d,surface,surface,ctx), "make current");
+#endif
     {
         artc::LayerShaders shaders;
         const std::string shader=R"(
@@ -57,25 +95,25 @@ int main() {
         Check(shaders.Load("custom",shader),"compile mobile GLSL interface");
         Check(!shaders.Load("custom","invalid shader"),"failed replacement keeps the previous shader");
         artc::LayerEffect effect;effect.Set({{"shader","custom"},{"red","0.5"},{"weights","0.25,0.125"}});
-        glBindFramebuffer(GL_FRAMEBUFFER,0);glViewport(0,0,32,32);
+        glBindFramebuffer(GL_FRAMEBUFFER,ARTC_DEFAULT_FBO);glViewport(0,0,32,32);
         glClearColor(0,0,1,1);glClear(GL_COLOR_BUFFER_BIT);
-        Check(shaders.Begin(0,32,32,0,false)!=0,"allocate intermediate layer");
+        Check(shaders.Begin(0,32,32,ARTC_DEFAULT_FBO,false)!=0,"allocate intermediate layer");
         glClearColor(0.5,0,0,0.5);glClear(GL_COLOR_BUFFER_BIT); // premultiplied red
-        Check(shaders.End(0,effect,0,false,1,{}),"apply native GLSL uniforms");
+        Check(shaders.End(0,effect,ARTC_DEFAULT_FBO,false,1,{}),"apply native GLSL uniforms");
         auto pixel=Pixel();
         Check(abs(pixel[0]-96)<=2 && abs(pixel[1]-16)<=2 && abs(pixel[2]-128)<=2,
               "unpremultiply before custom shader, then composite once");
         // Parameter state belongs to the layer, even when two layers share a program.
         effect.parameters.clear();
-        glBindFramebuffer(GL_FRAMEBUFFER,0);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
-        shaders.Begin(0,32,32,0,false);glClearColor(1,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
-        shaders.End(0,effect,0,false,1,{});pixel=Pixel();
+        glBindFramebuffer(GL_FRAMEBUFFER,ARTC_DEFAULT_FBO);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+        shaders.Begin(0,32,32,ARTC_DEFAULT_FBO,false);glClearColor(1,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+        shaders.End(0,effect,ARTC_DEFAULT_FBO,false,1,{});pixel=Pixel();
         Check(pixel[0]==0 && pixel[1]==0,"shader parameters never leak between layers");
         // CPU shader sources survive context/resource recreation, as on native load.
         shaders.ReleaseGl();
-        glBindFramebuffer(GL_FRAMEBUFFER,0);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
-        shaders.Begin(0,32,32,0,false);glClearColor(1,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
-        effect.Set({{"red","1"}});shaders.End(0,effect,0,false,1,{});
+        glBindFramebuffer(GL_FRAMEBUFFER,ARTC_DEFAULT_FBO);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+        shaders.Begin(0,32,32,ARTC_DEFAULT_FBO,false);glClearColor(1,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+        effect.Set({{"red","1"}});shaders.End(0,effect,ARTC_DEFAULT_FBO,false,1,{});
         Check(Pixel()[0]==255,"recompile retained shader after GL release");
         Check(shaders.Load("integers",R"(
             precision mediump float; uniform ivec3 tint; uniform bvec3 mask; uniform mat3 basis;
@@ -84,8 +122,8 @@ int main() {
                 gl_FragColor=vec4(basis*c*texture2D(images[0],resultCoord1).rgb*texture2D(images[1],resultCoord1).rgb,1.0);}
         )"),"compile integer/boolean vectors and sampler array");
         effect.Set({{"shader","integers"},{"tint","128,64,255"},{"mask","-2,0,1"},{"basis","1,0,0,0,1,0,0,0,1"}});
-        shaders.Begin(0,32,32,0,false);glClearColor(0,0,0,0);glClear(GL_COLOR_BUFFER_BIT);
-        Check(shaders.End(0,effect,0,false,1,{}),"bind all reflected GLSL uniform types");
+        shaders.Begin(0,32,32,ARTC_DEFAULT_FBO,false);glClearColor(0,0,0,0);glClear(GL_COLOR_BUFFER_BIT);
+        Check(shaders.End(0,effect,ARTC_DEFAULT_FBO,false,1,{}),"bind all reflected GLSL uniform types");
         pixel=Pixel();Check(abs(pixel[0]-128)<=1 && pixel[1]==0 && pixel[2]==255 && glGetError()==GL_NO_ERROR,
             "integer vectors and bool normalization reach shader without stale texture-array units");
         GLuint inputs[2];glGenTextures(2,inputs);
@@ -95,8 +133,8 @@ int main() {
             glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
         }
         effect.Set({{"images[0]","first"},{"images[1]","second"}});
-        shaders.Begin(0,32,32,0,false);glClearColor(0,0,0,0);glClear(GL_COLOR_BUFFER_BIT);
-        shaders.End(0,effect,0,false,1,{{"first",inputs[0]},{"second",inputs[1]}});
+        shaders.Begin(0,32,32,ARTC_DEFAULT_FBO,false);glClearColor(0,0,0,0);glClear(GL_COLOR_BUFFER_BIT);
+        shaders.End(0,effect,ARTC_DEFAULT_FBO,false,1,{{"first",inputs[0]},{"second",inputs[1]}});
         pixel=Pixel();Check(abs(pixel[0]-64)<=1 && pixel[1]==0 && pixel[2]==255,"sampler array elements use distinct texture units");
         glDeleteTextures(2,inputs);
         shaders.ReleaseGl();
@@ -540,6 +578,29 @@ int main() {
     Check(abs(p[0]-128)<=1 && p[1]==0 && p[2]==255,"negative filter applies to the composed group");
     c.SetProps("9",{{"negative","0"},{"grayscale","1"},{"alpha","255"}});c.Draw();p=Pixel();
     Check(abs(p[0]-150)<=1 && p[0]==p[1] && p[1]==p[2],"native grayscale luminance");
+    // E4: fractional grayscale blends toward the native luma, and MODULATE2X
+    // colours arrive as straight multiply factors (0x80 neutral).
+    c.SetProps("9",{{"grayscale","0.5"}});c.Draw();p=Pixel();
+    Check(abs(p[0]-75)<=2 && abs(p[1]-202)<=2 && abs(p[2]-75)<=2,
+        "fractional grayscale blends toward the native luma");
+    c.SetProps("9",{{"grayscale","0"},{"colormultiply","0x808080"}});c.Draw();p=Pixel();
+    Check(p[0]==0 && abs(p[1]-128)<=1 && p[2]==0,
+        "colormultiply applies the straight half-intensity factor");
+    c.SetProps("9",{{"colormultiply","0xFFFFFF"}});c.Draw();
+    // E9: native E-mote blend modes (bm). Multiply keeps the destination
+    // alpha; reverse-subtract computes dst - premultiplied src.
+    {
+        const uint8_t half[4]={128,128,128,255};
+        Check(c.SetPixels("31",half,1,1),"blend part");
+        c.SetProps("31",{{"w","32"},{"h","32"},{"layermode","multiply"}});c.Draw();
+        p=At(2,2);Check(abs(p[0]-128)<=1 && p[1]==0 && p[2]==0 && p[3]==255,
+            "multiply blend scales the red body and keeps its alpha");
+        const uint8_t white[4]={255,255,255,255};
+        Check(c.SetPixels("31",white,1,1),"subtract part");
+        c.SetProps("31",{{"layermode","subtract"}});c.Draw();
+        p=At(2,2);Check(p[0]==0 && p[1]==0 && p[2]==0,"subtract blend clamps dst minus src");
+        c.DeleteLayer("31");c.Draw();
+    }
     c.SetProps("9",{{"grayscale","0"}});
     Check(messages.DoString("e:tag{'lyshader',id='tint',file='filter.glsl'};e:tag{'lyshader',id='uv',file='uv.glsl'}",
         "load game shader"),"lyshader loads source through the resource resolver");
@@ -640,7 +701,11 @@ int main() {
     std::filesystem::remove(path);
     c.Shutdown();
     Check(glGetError()==GL_NO_ERROR, "resource cleanup");
+#if defined(ARTC_TEST_CGL)
+    CGLSetCurrentContext(nullptr);
+#else
     eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
     eglDestroyContext(d,ctx); eglDestroySurface(d,surface); eglTerminate(d);
+#endif
     std::cout << "retained framebuffer regression passed\n";
 }

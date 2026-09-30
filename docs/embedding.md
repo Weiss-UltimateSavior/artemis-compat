@@ -72,6 +72,10 @@ performed for this build integration.
 
 For macOS GLES tests, enable `ARTC_TEST_GLES` and provide ANGLE. Desktop OpenGL
 shader translation is selected by DESKTOP_GL, never merely by `__APPLE__`.
+Without ANGLE, macOS can still run the full GL regression on an offscreen CGL
+context: configure a test build with `ARTC_TEST_CGL=ON` (Darwin only). That
+target recompiles the core with the desktop GL backend and uses an offscreen
+FBO as the "screen" (a drawable-less CGL context has no default framebuffer).
 iOS compile experiments must explicitly select NULL audio; this is not a
 production iOS backend. The Cocoa host is macOS-only.
 

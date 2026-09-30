@@ -132,7 +132,8 @@ jni / host（宿主壳）
   glyph_atlas_regressions 是范式（命中/未命中计数断言 + 页代数 + 不重叠）。
 - GL 路径默认零编译覆盖（tests 走桩）；涉及 GL 的改动在 mac 宿主
   （`./build-mac/artemis-mac <游戏目录>`）冒烟，必要时开 `ARTC_TEST_GLES`
-  （需 ANGLE）。
+  （需 ANGLE）或 `ARTC_TEST_CGL`（macOS 离屏 CGL，无需窗口/ANGLE）：
+  `cmake -B build-cgl -DARTC_BUILD_TESTS=ON -DARTC_TEST_CGL=ON && cmake --build build-cgl -j8 --target compositor_regressions && ./build-cgl/tests/compositor_regressions`。
 - 已知缺口（Tier 3 补齐中）：AsbRunner / save_storage 故障注入 / iet /
   JNI 生命周期暂无专属回归——改到这些区域时至少跑真机或 mac 宿主冒烟。
 

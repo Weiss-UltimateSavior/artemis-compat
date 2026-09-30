@@ -27,6 +27,12 @@ struct PsbDocument {
     bool ReadResource(const PsbValue& ref,std::vector<uint8_t>& out) const;
 };
 bool DecodePsb(const std::vector<uint8_t>& bytes,PsbDocument& out,std::string& error);
+// Optional host-provided decryption seed for encrypted PSB headers (the
+// `lzfs`/MDF wrappers are handled inside DecodePsb). 0 (default) derives the
+// seed from the canonical header length; ARTC_EMOTE_SEED still overrides for
+// diagnostics. Precedence: host seed > environment > derived.
+void SetPsbDecryptSeed(uint32_t seed);
+uint32_t PsbDecryptSeed();
 // PSB RL packets encode repeated or literal complete pixels/indices, not
 // independent color channels. Reject underflow, overflow and trailing packets.
 bool DecodePsbRl(const std::vector<uint8_t>& bytes,size_t count,unsigned stride,

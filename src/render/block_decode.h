@@ -11,6 +11,11 @@ namespace artc {
 // `src` must hold ceil(w/4)*ceil(h/4)*16 bytes.
 void DecodeDxt5Blocks(const std::vector<uint8_t> &src, int width, int height,
                       std::vector<uint8_t> &out);
+// BC1/BC2; DXT1 `src` holds 8 bytes per 4x4 block (1-bit-alpha mode included).
+void DecodeDxt1Blocks(const std::vector<uint8_t> &src, int width, int height,
+                      std::vector<uint8_t> &out);
+void DecodeDxt3Blocks(const std::vector<uint8_t> &src, int width, int height,
+                      std::vector<uint8_t> &out);
 void DecodeBc7Blocks(const std::vector<uint8_t> &src, int width, int height,
                      std::vector<uint8_t> &out);
 

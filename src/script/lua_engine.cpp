@@ -90,13 +90,14 @@ char kPackKey;
 // same-id replace reports "layer removed" instead of dangling. Method
 // names follow the reference motion-player binding; the original proxy was
 // luabind-registered with the same camelCase surface, so both spellings
-// are accepted. Signatures track the native driver (emotedriver.dll):
-// setters are (value, time_ms, ease), fades are (label, time_ms, ease) and
-// setTimelineBlendRatio is (label, ratio, time_ms, ease, flags).
-// Unregistered physics/hit-test methods (startWind, setOuterForce,
-// setOuterRot, contains, ...) fall through to a logging stub like the
+// are accepted. Signatures track the Artemis script contract
+// (system/image/emote.lua + art3m1s-core binding): transitions/fades/progress
+// take FRAMES at 60 fps and are converted to this module's millisecond clock,
+// setCoord is (x, y, z, angle), setScale is (scale, origin_x, origin_y) and
+// setColor is 0xRRGGBBAA. Unregistered physics methods (startWind,
+// setOuterForce, setOuterRot, ...) fall through to a logging stub like the
 // e-table does — this layer deliberately does not fake SDK behavior it
-// cannot render.
+// cannot render. `contains`/`hitTest` query the shape layers.
 namespace {
 const char kEmoteMetaName[] = "artc.emote";
 
@@ -131,6 +132,10 @@ int EmoteError(lua_State *L, const std::string &error) {
     return 2;
 }
 
+// Lua transition/fade/progress arguments are FRAME counts at 60 fps (the
+// shipped scripts divide milliseconds by 16.666 before calling the engine).
+constexpr double kEmoteFrameMs = 1000.0 / 60.0;
+
 int m_setRot(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
@@ -143,11 +148,13 @@ int m_getRot(lua_State *L) {
     lua_pushnumber(L, e->GetRot());
     return 1;
 }
+// Artemis contract: setCoord(x, y, z, angle). z is depth (ignored by the 2D
+// compositor); angle rotates the model. Instant placement.
 int m_setCoord(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
-    e->SetCoord(luaL_checknumber(L, 2), luaL_checknumber(L, 3),
-                luaL_optnumber(L, 4, 0), luaL_optnumber(L, 5, 0));
+    e->SetCoordAngle(luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+                     luaL_optnumber(L, 4, 0), luaL_optnumber(L, 5, 0));
     return 0;
 }
 int m_getCoord(lua_State *L) {
@@ -159,8 +166,9 @@ int m_getCoord(lua_State *L) {
     lua_pushnumber(L, y);
     return 2;
 }
-// Reference contract is setScale(s, transition, ease); four user arguments are
-// the per-axis extension setScale(sx, sy, transition, ease).
+// Artemis contract: setScale(scale, origin_x, origin_y) — uniform scale with a
+// model-space pivot. Four user arguments keep the engine-specific per-axis
+// extension setScale(sx, sy, transition_ms, ease).
 int m_setScale(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
@@ -169,7 +177,7 @@ int m_setScale(lua_State *L) {
         e->SetScale(s, luaL_checknumber(L, 3), luaL_optnumber(L, 4, 0),
                     luaL_optnumber(L, 5, 0));
     } else {
-        e->SetScale(s, s, luaL_optnumber(L, 3, 0), luaL_optnumber(L, 4, 0));
+        e->SetScaleOrigin(s, luaL_optnumber(L, 3, 0), luaL_optnumber(L, 4, 0));
     }
     return 0;
 }
@@ -192,7 +200,7 @@ int m_setColor(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
     e->SetColor(static_cast<uint32_t>(luaL_checknumber(L, 2)),
-                luaL_optnumber(L, 3, 0), luaL_optnumber(L, 4, 0));
+                luaL_optnumber(L, 3, 0) * kEmoteFrameMs, luaL_optnumber(L, 4, 0));
     return 0;
 }
 int m_getColor(lua_State *L) {
@@ -204,8 +212,26 @@ int m_getColor(lua_State *L) {
 int m_setGrayscale(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
-    e->SetGrayscale(luaL_checknumber(L, 2), luaL_optnumber(L, 3, 0),
+    e->SetGrayscale(luaL_checknumber(L, 2), luaL_optnumber(L, 3, 0) * kEmoteFrameMs,
                     luaL_optnumber(L, 4, 0));
+    return 0;
+}
+int m_setMeshDivisionRatio(lua_State *L) {
+    EmotePlayer *e = Emote(L);
+    if (!e) return 2;
+    e->SetMeshDivisionRatio(luaL_checknumber(L, 2));
+    return 0;
+}
+int m_setHairScale(lua_State *L) {
+    EmotePlayer *e = Emote(L);
+    if (!e) return 2;
+    e->SetHairScale(luaL_checknumber(L, 2));
+    return 0;
+}
+int m_setBustScale(lua_State *L) {
+    EmotePlayer *e = Emote(L);
+    if (!e) return 2;
+    e->SetBustScale(luaL_checknumber(L, 2));
     return 0;
 }
 int m_show(lua_State *L) {
@@ -255,12 +281,14 @@ int m_getTimelineTotalFrameCount(lua_State *L) {
     lua_pushnumber(L, e->TimelineTotalFrames(luaL_checkstring(L, 2)));
     return 1;
 }
+// Fade durations are frame counts in the shipped scripts (ms/16.666).
 int m_fadeInTimeline(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
     const char *label = luaL_checkstring(L, 2);
     std::string error;
-    if (!e->FadeInTimeline(label, luaL_checknumber(L, 3), luaL_optnumber(L, 4, 0), error))
+    if (!e->FadeInTimeline(label, luaL_optnumber(L, 3, 0) * kEmoteFrameMs,
+                           luaL_optnumber(L, 4, 0), error))
         return EmoteError(L, error);
     lua_pushboolean(L, true);
     return 1;
@@ -270,20 +298,22 @@ int m_fadeOutTimeline(lua_State *L) {
     if (!e) return 2;
     const char *label = luaL_checkstring(L, 2);
     std::string error;
-    if (!e->FadeOutTimeline(label, luaL_checknumber(L, 3), luaL_optnumber(L, 4, 0), error))
+    if (!e->FadeOutTimeline(label, luaL_optnumber(L, 3, 0) * kEmoteFrameMs,
+                            luaL_optnumber(L, 4, 0), error))
         return EmoteError(L, error);
     lua_pushboolean(L, true);
     return 1;
 }
-// setTimelineBlendRatio(label, ratio [, time [, ease [, flags]]]) — the driver
-// contract; a non-zero flags arms the fade-out stop.
+// setTimelineBlendRatio(label, ratio [, frames [, ease [, flags]]]) — flags
+// non-zero arms the fade-out stop.
 int m_setTimelineBlendRatio(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
     const char *label = luaL_checkstring(L, 2);
     std::string error;
     if (!e->SetTimelineBlendRatio(label, luaL_checknumber(L, 3),
-                                  luaL_optnumber(L, 4, 0), luaL_optnumber(L, 5, 0),
+                                  luaL_optnumber(L, 4, 0) * kEmoteFrameMs,
+                                  luaL_optnumber(L, 5, 0),
                                   lua_toboolean(L, 6) != 0, error))
         return EmoteError(L, error);
     lua_pushboolean(L, true);
@@ -371,8 +401,9 @@ int m_setVariable(lua_State *L) {
     if (!e) return 2;
     const char *label = luaL_checkstring(L, 2);
     std::string error;
-    if (!e->SetVariable(label, luaL_checknumber(L, 3), luaL_optnumber(L, 4, 0),
-                        luaL_optnumber(L, 5, 0), error))
+    if (!e->SetVariable(label, luaL_checknumber(L, 3),
+                        luaL_optnumber(L, 4, 0) * kEmoteFrameMs, luaL_optnumber(L, 5, 0),
+                        error))
         return EmoteError(L, error);
     lua_pushboolean(L, true);
     return 1;
@@ -392,7 +423,7 @@ int m_setVariableDiff(lua_State *L) {
     if (!e) return 2;
     std::string error;
     if (!e->SetVariableDiff(luaL_checkstring(L, 2), luaL_checkstring(L, 3),
-                            luaL_checknumber(L, 4), luaL_optnumber(L, 5, 0),
+                            luaL_checknumber(L, 4), luaL_optnumber(L, 5, 0) * kEmoteFrameMs,
                             luaL_optnumber(L, 6, 0), error))
         return EmoteError(L, error);
     lua_pushboolean(L, true);
@@ -422,10 +453,27 @@ int m_step(lua_State *L) {
     e->Step();
     return 0;
 }
+// contains([label,] x, y) / hitTest([label,] x, y): point test over the
+// player's shape layers. Both use stage pixel coordinates here (the legacy
+// affine input space collapses to the same map in this engine).
+int EmoteHitTestImpl(lua_State *L) {
+    EmotePlayer *e = Emote(L);
+    if (!e) return 2;
+    EmoteProxy *proxy = CheckEmoteProxy(L);
+    const bool has_label = lua_gettop(L) >= 4 && lua_type(L, 2) == LUA_TSTRING;
+    const std::string label = has_label ? lua_tostring(L, 2) : std::string();
+    const double x = luaL_checknumber(L, has_label ? 3 : 2);
+    const double y = luaL_checknumber(L, has_label ? 4 : 3);
+    lua_pushboolean(L, proxy && proxy->engine->EmoteHitTest(proxy->id, label, x, y) ? 1 : 0);
+    return 1;
+}
+int m_contains(lua_State *L) { return EmoteHitTestImpl(L); }
+int m_hitTest(lua_State *L) { return EmoteHitTestImpl(L); }
+// progress(frames) — the scripts pass elapsed 60 fps frames.
 int m_progress(lua_State *L) {
     EmotePlayer *e = Emote(L);
     if (!e) return 2;
-    e->Progress(luaL_checknumber(L, 2));
+    e->Progress(luaL_checknumber(L, 2) * kEmoteFrameMs);
     return 0;
 }
 
@@ -444,6 +492,10 @@ const struct {
     {"setColor", m_setColor}, {"SetColor", m_setColor},
     {"getColor", m_getColor}, {"GetColor", m_getColor},
     {"setGrayscale", m_setGrayscale}, {"SetGrayscale", m_setGrayscale},
+    {"setMeshDivisionRatio", m_setMeshDivisionRatio},
+    {"SetMeshDivisionRatio", m_setMeshDivisionRatio},
+    {"setHairScale", m_setHairScale}, {"SetHairScale", m_setHairScale},
+    {"setBustScale", m_setBustScale}, {"SetBustScale", m_setBustScale},
     {"show", m_show}, {"Show", m_show},
     {"hide", m_hide}, {"Hide", m_hide},
     {"playTimeline", m_playTimeline}, {"PlayTimeline", m_playTimeline},
@@ -484,6 +536,8 @@ const struct {
     {"skip", m_skip}, {"Skip", m_skip},
     {"pass", m_pass}, {"Pass", m_pass},
     {"step", m_step}, {"Step", m_step},
+    {"contains", m_contains}, {"Contains", m_contains},
+    {"hitTest", m_hitTest}, {"HitTest", m_hitTest},
     {"progress", m_progress}, {"Progress", m_progress},
 };
 
@@ -992,16 +1046,20 @@ int LuaEngine::l_loadPngComments(lua_State *L) {
 }
 
 // e:createEmoteLayer{id=…, files={…}, width=…, height=…, progress=…} — load a
-// PSB E-mote model as a layer subtree rooted at the id. The original engine
-// accepted a multi-file archive (split PSB); this port reads exactly one PSB
-// file and fails explicitly otherwise. width/height/progress are accepted for
-// call-compatibility (render size is the compositor stage's).
+// PSB E-mote model as a layer subtree rooted at the id. The engine reads exactly
+// one PSB file (the reference host does the same) and fails explicitly
+// otherwise. width/height are accepted for call-compatibility (render size is
+// the compositor stage's). progress=false means the script drives progress()/
+// step() itself (the Windows/PS4/Switch script path); absent or true keeps the
+// wall-clock auto progress.
 int LuaEngine::l_createEmoteLayer(lua_State *L) {
     LuaEngine *self = Self(L);
     luaL_checktype(L, 2, LUA_TTABLE);
     std::string id;
     std::string file;
     int files = 0;
+    int layer_w = 0, layer_h = 0;
+    bool auto_progress = true;
     lua_pushnil(L);
     while (lua_next(L, 2) != 0) {
         if (lua_type(L, -2) == LUA_TSTRING) {
@@ -1022,8 +1080,15 @@ int LuaEngine::l_createEmoteLayer(lua_State *L) {
                     }
                     lua_pop(L, 1);
                 }
+            } else if (k && std::strcmp(k, "progress") == 0) {
+                auto_progress = lua_toboolean(L, -1) != 0;
+            } else if (k && (std::strcmp(k, "width") == 0 || std::strcmp(k, "height") == 0)) {
+                if (lua_type(L, -1) == LUA_TNUMBER) {
+                    const int v = int(lua_tointeger(L, -1));
+                    if (std::strcmp(k, "width") == 0) layer_w = v;
+                    else layer_h = v;
+                }
             }
-            // width / height / progress: contract parity only (see above)
         }
         lua_pop(L, 1);
     }
@@ -1073,6 +1138,11 @@ int LuaEngine::l_createEmoteLayer(lua_State *L) {
         lua_pushnil(L);
         return 1;
     }
+    player->SetAutoProgress(auto_progress);
+    // The native layer box: the model's origin sits at the box centre
+    // (reference host: model_origin = width/2, height/2), while setCoord
+    // shifts the model inside it.
+    player->SetLayerSize(layer_w, layer_h);
     // Replace-in-place: tear the previous same-id layer down first so a stale
     // scene never renders beside the new one.
     const auto old = self->emotes_.find(id);
@@ -1086,11 +1156,30 @@ int LuaEngine::l_createEmoteLayer(lua_State *L) {
     return 1;
 }
 
-// e:getEmoteLayer(id) — proxy for a live E-mote layer, nil when absent.
+// e:getEmoteLayer(id) or e:getEmoteLayer{id=…, next=…} — proxy for a live
+// E-mote layer, nil when absent. next=true asks for the pending instance a
+// transition is promoting; this port keeps a single live instance per id, so
+// the live one is returned and the promotion is logged once.
 int LuaEngine::l_getEmoteLayer(lua_State *L) {
     LuaEngine *self = Self(L);
-    const char *id = luaL_checkstring(L, 2);
-    if (!self || !self->FindEmote(id)) {
+    std::string id;
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "id");
+        if (lua_type(L, -1) == LUA_TSTRING) id = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "next");
+        if (lua_toboolean(L, -1)) {
+            static bool reported = false;
+            if (!reported) {
+                reported = true;
+                Log(kLogInfo, "emote: getEmoteLayer{next=true} returns the live instance");
+            }
+        }
+        lua_pop(L, 1);
+    } else if (lua_type(L, 2) == LUA_TSTRING) {
+        id = lua_tostring(L, 2);
+    }
+    if (id.empty() || !self || !self->FindEmote(id)) {
         lua_pushnil(L);
         return 1;
     }
@@ -1107,6 +1196,12 @@ int LuaEngine::l_getEmoteVersion(lua_State *L) {
 EmotePlayer *LuaEngine::FindEmote(const std::string &id) {
     const auto it = emotes_.find(id);
     return it == emotes_.end() ? nullptr : it->second.get();
+}
+
+bool LuaEngine::EmoteHitTest(const std::string &id, const std::string &label, double x, double y) {
+    EmotePlayer *player = FindEmote(id);
+    if (!player || !compositor_) return false;
+    return player->Contains(*compositor_, id, label, x, y);
 }
 
 // e:setMagicPath{word, path} — register the ":word" path alias (official spec:

@@ -885,6 +885,14 @@ int main(int argc, char** argv) {
     auto emote_document = emote_fixture::PlayerDocument();
     emote_document.root.object["metadata"].object["variableList"].array.push_back(
         emote_fixture::O({{"label", emote_fixture::S("partner")}}));
+    // WP9: a shape node (type==1, 16x16 SDK unit) gives the Lua hit-test
+    // surface; it sits in the base motion at model coords (20,10), scaled 2x.
+    emote_document.root.object["object"].object["actor"].object["motion"].object["idle"]
+        .object["layer"].array.push_back(emote_fixture::Node(1,"hit",emote_fixture::A({
+            emote_fixture::Key(0,2,emote_fixture::O({{"src",emote_fixture::S("shape/rect")},
+                {"coord",emote_fixture::A({emote_fixture::N(20),emote_fixture::N(10),emote_fixture::N(0)})},
+                {"zx",emote_fixture::N(2)},{"zy",emote_fixture::N(2)}})),
+            emote_fixture::Key(11,0)})));
     const std::map<std::string,std::vector<uint8_t>> emote_files = {
         {"emote.psb", emote_fixture::EncodePsb(emote_document)}
     };
@@ -923,30 +931,50 @@ int main(int argc, char** argv) {
         assert(m:isTimelinePlaying('delta'))
         assert(m:setVariable('expression',5) and m:getVariable('expression')==5)
         local ok,err=m:setVariable('missing',1);assert(ok==false and err)
-        m:setScale(1.5,0,0)                          -- native form: value, time, ease
+        m:setScale(1.5,0,0)                          -- Artemis: (scale, origin_x, origin_y)
         local sx,sy=m:getScale();assert(sx==1.5 and sy==1.5)
         m:setScale(2,3,0,0)                          -- per-axis extension
         sx,sy=m:getScale();assert(sx==2 and sy==3)
+        m:setCoord(12,34,0,90)                       -- Artemis: (x, y, z, angle)
+        local cx,cy=m:getCoord();assert(cx==12 and cy==34 and m:getRot()==90)
         m:setGrayscale(0.5,0,0)
+        m:setMeshDivisionRatio(0.8)                  -- recorded knobs, no error
+        m:setHairScale(0.5)
+        m:setBustScale(0.5)
         assert(m:setVariableDiff('expression','partner',4,0,0))
         assert(m:getVariable('expression')==4 and m:getVariable('partner')==-4)
         local dok,derr=m:setVariableDiff('expression','missing',1,0,0);assert(dok==false and derr)
-        assert(m:fadeInTimeline('delta',150,0))      -- fade ease travels as a float
+        -- frame units: 60 frames = 1 s; after 30 frames the transition is half done
+        m:setVariable('expression',0,0,0)
+        assert(m:setVariable('expression',10,60,0))
+        m:progress(30)
+        assert(m:getVariable('expression')==5)
+        assert(m:fadeInTimeline('delta',150,0))      -- fade frames + ease float
         assert(m:fadeOutTimeline('delta',150,0))
         assert(m:setTimelineBlendRatio('delta',0.5,100,0))
         m:step()                                     -- one 60 fps frame
+        assert(e:getEmoteLayer{id='m1',next=true})   -- table form + next
         m:startWind(1,2,3)                           -- unregistered physics: stub, no error
         stale=m
     )","emote lua"),"E-mote proxy playback through the bridge");
     emote.RunEnterFrame();  // UpdateEmotes renders every live player
     Check(emote_compositor.GetLayerInfo("m1").found, "frame tick renders the E-mote layer subtree");
     Check(emote.DoString(R"(
+        -- WP9: shape hit tests run against the rendered transforms. The layer
+        -- was rendered with scale (2,3) + rotation 90 and coord (12,34) inside
+        -- the 1280x720 createEmoteLayer box, so the shape at model (20,10)
+        -- lands at box-relative (-18,74) and world (622,434).
+        local m1p=e:getEmoteLayer('m1')
+        assert(m1p:contains('hit',622,434))
+        assert(not m1p:contains('hit',0,0))
+        assert(not m1p:contains('missing',622,434))
+        assert(m1p:hitTest(622,434))
         e:tag{'lydel',id='m1'}
         assert(e:getEmoteLayer('m1')==nil)
         local ok,err=stale:isTimelinePlaying('delta')
         assert(ok==nil and err=='E-mote layer removed')
         assert(select('#',stale:getVariable('expression'))==2)
-    )","stale"),"lydel invalidates live proxies");
+    )","hit+stale"),"lydel invalidates live proxies");
     std::filesystem::remove(emote_path);
     Check(script.DoString(R"(
         assert(pluto.unpersist({},"")==nil)

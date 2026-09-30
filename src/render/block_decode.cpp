@@ -63,6 +63,85 @@ void DecodeDxt5Blocks(const std::vector<uint8_t> &src, int width, int height,
         }
 }
 
+namespace {
+// Shared BC1 colour expansion: 565 endpoints plus the 2-bit index table.
+// `punch` selects the c0<=c1 3-colour + transparent mode (DXT1 only).
+void Bc1Colors(const uint8_t *block, bool punch, uint8_t colors[4][4]) {
+    const uint16_t c0 = uint16_t(block[0] | (block[1] << 8));
+    const uint16_t c1 = uint16_t(block[2] | (block[3] << 8));
+    const auto rgb = [](uint16_t c, uint8_t *o) {
+        o[0] = uint8_t(((c >> 11) & 0x1F) * 255 / 31);
+        o[1] = uint8_t(((c >> 5) & 0x3F) * 255 / 63);
+        o[2] = uint8_t((c & 0x1F) * 255 / 31);
+    };
+    rgb(c0, colors[0]);
+    rgb(c1, colors[1]);
+    colors[0][3] = colors[1][3] = 255;
+    if (!punch || c0 > c1) {
+        for (int k = 0; k < 3; ++k) {
+            colors[2][k] = uint8_t((2 * colors[0][k] + colors[1][k]) / 3);
+            colors[3][k] = uint8_t((colors[0][k] + 2 * colors[1][k]) / 3);
+        }
+        colors[2][3] = colors[3][3] = 255;
+    } else {
+        for (int k = 0; k < 3; ++k) {
+            colors[2][k] = uint8_t((colors[0][k] + colors[1][k]) / 2);
+            colors[3][k] = 0;
+        }
+        colors[2][3] = 255;
+        colors[3][3] = 0;  // punch-through black
+    }
+}
+} // namespace
+
+void DecodeDxt1Blocks(const std::vector<uint8_t> &src, int width, int height,
+                      std::vector<uint8_t> &out) {
+    const int bw = (width + 3) / 4, bh = (height + 3) / 4;
+    if (src.size() < size_t(bw) * bh * 8) throw std::runtime_error("truncated DXT1 block");
+    out.assign(size_t(width) * height * 4, 0);
+    for (int by = 0; by < bh; ++by)
+        for (int bx = 0; bx < bw; ++bx) {
+            const uint8_t *block = src.data() + (size_t(by) * bw + bx) * 8;
+            uint8_t colors[4][4];
+            Bc1Colors(block, true, colors);
+            const uint32_t bits = uint32_t(block[4]) | (uint32_t(block[5]) << 8) |
+                                  (uint32_t(block[6]) << 16) | (uint32_t(block[7]) << 24);
+            for (int py = 0; py < 4; ++py)
+                for (int px = 0; px < 4; ++px) {
+                    const int x = bx * 4 + px, y = by * 4 + py;
+                    if (x >= width || y >= height) continue;
+                    const int index = (bits >> (2 * (py * 4 + px))) & 3;
+                    std::copy_n(colors[index], 4, out.data() + (size_t(y) * width + x) * 4);
+                }
+        }
+}
+
+void DecodeDxt3Blocks(const std::vector<uint8_t> &src, int width, int height,
+                      std::vector<uint8_t> &out) {
+    const int bw = (width + 3) / 4, bh = (height + 3) / 4;
+    if (src.size() < size_t(bw) * bh * 16) throw std::runtime_error("truncated DXT3 block");
+    out.assign(size_t(width) * height * 4, 0);
+    for (int by = 0; by < bh; ++by)
+        for (int bx = 0; bx < bw; ++bx) {
+            const uint8_t *block = src.data() + (size_t(by) * bw + bx) * 16;
+            uint64_t alpha = 0;
+            for (int i = 0; i < 8; ++i) alpha |= uint64_t(block[i]) << (8 * i);
+            uint8_t colors[4][4];
+            Bc1Colors(block + 8, false, colors);
+            const uint32_t bits = uint32_t(block[12]) | (uint32_t(block[13]) << 8) |
+                                  (uint32_t(block[14]) << 16) | (uint32_t(block[15]) << 24);
+            for (int py = 0; py < 4; ++py)
+                for (int px = 0; px < 4; ++px) {
+                    const int x = bx * 4 + px, y = by * 4 + py;
+                    if (x >= width || y >= height) continue;
+                    const int index = (bits >> (2 * (py * 4 + px))) & 3;
+                    uint8_t *o = out.data() + (size_t(y) * width + x) * 4;
+                    std::copy_n(colors[index], 3, o);
+                    o[3] = uint8_t(((alpha >> (4 * (py * 4 + px))) & 0xF) * 17);
+                }
+        }
+}
+
 void DecodeBc7Blocks(const std::vector<uint8_t> &src, int width, int height,
                      std::vector<uint8_t> &out) {
     const int bw = (width + 3) / 4, bh = (height + 3) / 4;

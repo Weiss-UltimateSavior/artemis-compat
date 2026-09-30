@@ -1,10 +1,14 @@
 #include "pack/psb.h"
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <zlib.h>
 
 namespace artc {
+namespace { uint32_t g_psb_decrypt_seed=0; }
+void SetPsbDecryptSeed(uint32_t seed) { g_psb_decrypt_seed=seed; }
+uint32_t PsbDecryptSeed() { return g_psb_decrypt_seed; }
 const PsbValue& PsbValue::At(const std::string& key) const {
     static const PsbValue missing;
     const auto i=object.find(key);return i==object.end()?missing:i->second;
@@ -34,6 +38,66 @@ struct PsbCipher {
         }
     }
 };
+// LZ4 block (RFC 1951-style sequences): literals + 2-byte match offset.
+bool InflateLz4Block(const uint8_t* src,size_t n,std::vector<uint8_t>& out) {
+    size_t i=0;
+    while(i<n) {
+        const uint8_t token=src[i++];
+        size_t literals=token>>4;
+        if(literals==15) {
+            uint8_t add=0;
+            do { if(i>=n)return false; add=src[i++]; literals+=add; } while(add==255);
+        }
+        if(literals>n-i || out.size()+literals>MaxBytes)return false;
+        out.insert(out.end(),src+i,src+i+literals);i+=literals;
+        if(i==n)break;  // last sequence carries literals only
+        if(i+2>n)return false;
+        const size_t offset=size_t(src[i])|(size_t(src[i+1])<<8);i+=2;
+        if(offset==0 || offset>out.size())return false;
+        size_t length=size_t(token&0x0f);
+        if(length==15) {
+            uint8_t add=0;
+            do { if(i>=n)return false; add=src[i++]; length+=add; } while(add==255);
+        }
+        length+=4;
+        if(out.size()+length>MaxBytes)return false;
+        for(size_t k=0;k<length;++k)out.push_back(out[out.size()-offset]);
+    }
+    return true;
+}
+// Minimal LZ4 frame reader for the "lzfs" PSB container. Independent blocks
+// only (linked blocks need a 64 KiB window and do not appear in PSB exports);
+// header/block/content checksums are skipped, the payload is what matters.
+bool InflateLz4Frame(const uint8_t* data,size_t size,std::vector<uint8_t>& out) {
+    if(size<7)return false;
+    if(!(data[0]==0x04 && data[1]==0x22 && data[2]==0x4D && data[3]==0x18))return false;
+    const uint8_t flg=data[4];
+    if((flg>>6)!=1)return false;              // version 01
+    if(!(flg&0x20))return false;              // independent blocks required
+    size_t p=6;                                // magic + FLG + BD
+    if(flg&0x08)p+=8;                          // content size
+    if(flg&0x01)p+=4;                          // dictionary id
+    p+=1;                                      // header checksum
+    if(p>size)return false;
+    const bool block_checksum=(flg&0x10)!=0;
+    while(true) {
+        if(p+4>size)return false;
+        const uint32_t block=uint32_t(data[p])|(uint32_t(data[p+1])<<8)|
+                             (uint32_t(data[p+2])<<16)|(uint32_t(data[p+3])<<24);
+        p+=4;
+        if(block==0)break;                     // end mark
+        const size_t length=block&0x7FFFFFFFu;
+        if(length>size-p)return false;
+        if(block&0x80000000u) {                // stored block
+            if(out.size()+length>MaxBytes)return false;
+            out.insert(out.end(),data+p,data+p+length);
+        } else if(!InflateLz4Block(data+p,length,out)) return false;
+        p+=length;
+        if(block_checksum)p+=4;
+        if(p>size)return false;
+    }
+    return true;
+}
 struct Reader {
     PsbDocument doc;
     std::vector<std::string> names,strings;
@@ -147,10 +211,10 @@ struct Reader {
         if(encryption_flags&1) {
             // Try seeds against a copy of the header; commit only when the
             // decrypted header passes its adler32 checksum (a definitive check,
-            // so a wrong seed cannot slip through). We first try an explicit
-            // ARTC_EMOTE_SEED override, then derive the seed from the canonical
-            // header length (the encrypted word at offset 8 must decode to the
-            // plain header length).
+            // so a wrong seed cannot slip through; v2 has no checksum). Seed
+            // precedence: host hook > ARTC_EMOTE_SEED > derived from the
+            // canonical header length (the encrypted word at offset 8 must
+            // decode to the plain header length).
             const uint8_t *src=doc.bytes.data();
             std::vector<uint8_t> header(src,src+header_len);
             auto checksum_ok=[&](const std::vector<uint8_t>& h)->bool {
@@ -165,16 +229,20 @@ struct Reader {
                                     (uint32_t(h[42])<<16)|(uint32_t(h[43])<<24);
                 return ((b<<16)|a)==want;
             };
+            uint32_t chosen=0;
             auto try_seed=[&](uint32_t seed)->bool {
                 std::vector<uint8_t> h=header;
                 PsbCipher(seed).Apply(h.data()+8,header_len-8);
                 if(!checksum_ok(h)) return false;
-                header.swap(h);return true;
+                chosen=seed;header.swap(h);return true;
             };
             bool decrypted=false;
-            if(const char* e=std::getenv("ARTC_EMOTE_SEED")) {
-                char* end=nullptr;const unsigned long v=std::strtoul(e,&end,0);
-                if(end && *end=='\0' && v) decrypted=try_seed(uint32_t(v));
+            if(g_psb_decrypt_seed) decrypted=try_seed(g_psb_decrypt_seed);
+            if(!decrypted) {
+                if(const char* e=std::getenv("ARTC_EMOTE_SEED")) {
+                    char* end=nullptr;const unsigned long v=std::strtoul(e,&end,0);
+                    if(end && *end=='\0' && v) decrypted=try_seed(uint32_t(v));
+                }
             }
             if(!decrypted) {
                 uint32_t encrypted=0;
@@ -185,7 +253,24 @@ struct Reader {
                 decrypted=try_seed(rhs^(rhs>>19));
             }
             if(!decrypted)Fail("encrypted PSB: header key/checksum mismatch");
-            std::copy(header.begin(),header.end(),doc.bytes.begin());
+            if(doc.version==2) {
+                // PSB v2 additionally encrypts the body up to the chunk-offset
+                // table with the same stream (reference host: emotefile::load
+                // continues the cipher after the header fields). Decrypt the
+                // header in place with that stream, then continue into the body.
+                auto read32=[&](size_t at) {
+                    return uint32_t(header[at])|(uint32_t(header[at+1])<<8)|
+                           (uint32_t(header[at+2])<<16)|(uint32_t(header[at+3])<<24);
+                };
+                const size_t body_begin=read32(8), body_end=read32(24);
+                if(body_begin<header_len || body_end<body_begin || body_end>doc.bytes.size())
+                    Fail("encrypted PSB: invalid v2 body range");
+                PsbCipher cipher(chosen);
+                cipher.Apply(doc.bytes.data()+8,header_len-8);
+                if(body_end>body_begin)cipher.Apply(doc.bytes.data()+body_begin,body_end-body_begin);
+            } else {
+                std::copy(header.begin(),header.end(),doc.bytes.begin());
+            }
         }
         const uint32_t header_length=Header(8);
         if(header_length!=0 && header_length!=header_len)Fail("unexpected PSB header length");
@@ -201,7 +286,11 @@ bool DecodePsb(const std::vector<uint8_t>& input,PsbDocument& out,std::string& e
     try {
         if(input.size()>MaxBytes)throw std::runtime_error("PSB file too large");
         Reader r;
-        if(input.size()>=8 && (input[0]|32)=='m' && (input[1]|32)=='d' && (input[2]|32)=='f' && !input[3]) {
+        if(input.size()>=4 && input[0]==0x04 && input[1]==0x22 && input[2]==0x4D && input[3]==0x18) {
+            // "lzfs" LZ4 frame container (KiriKiri exports, lzfs.dll).
+            if(!InflateLz4Frame(input.data(),input.size(),r.doc.bytes))
+                throw std::runtime_error("invalid lzfs LZ4 frame");
+        } else if(input.size()>=8 && (input[0]|32)=='m' && (input[1]|32)=='d' && (input[2]|32)=='f' && !input[3]) {
             uint32_t size=0;for(int i=0;i<4;++i)size|=uint32_t(input[4+i])<<(8*i);
             if(!size || size>MaxBytes)throw std::runtime_error("invalid MDF size");
             r.doc.bytes.resize(size);z_stream z{};

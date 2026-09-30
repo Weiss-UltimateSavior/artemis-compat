@@ -1,5 +1,6 @@
 #include "render/emote_player.h"
 #include "render/compositor.h"
+#include "log/logger.h"
 #include <algorithm>
 #include <cmath>
 
@@ -16,7 +17,11 @@ std::string Num(double v) {
 
 void EmotePlayer::Animated::Set(double v, double transition_ms, double ease) {
     if (!(transition_ms > 0)) {
+        // Immediate sets update the target too: Skip()/Pass() call Finish()
+        // (value = target) and must not undo an instant placement.
         value = v;
+        start = v;
+        target = v;
         duration_ms = 0;
         elapsed_ms = 0;
         return;
@@ -54,9 +59,133 @@ bool EmotePlayer::Load(std::shared_ptr<const EmoteModel> model, std::string& err
     if (!next.scene_.Load(model, error)) return false;
     next.model_ = std::move(model);
     for (const auto& label : next.model_->Variables()) next.variables_[label] = Animated();
+    // Eye blinks run on a deterministic per-player LCG (the shipped models only
+    // need a repeatable interval distribution; tests pin min==max).
+    const auto& blinks = next.model_->Blinks();
+    next.blinks_.resize(blinks.size());
+    for (size_t i = 0; i < blinks.size(); ++i) {
+        next.blinks_[i].rng = 0x9E3779B9u * static_cast<uint32_t>(i + 1) | 1u;
+        next.blinks_[i].frame = blinks[i].begin;
+        next.ScheduleBlink(blinks[i], next.blinks_[i]);
+    }
+    // metadata.mirror flips the model by default; Lua setMirror can override.
+    next.mirror_ = next.model_->Mirrored();
     *this = std::move(next);
     error.clear();
     return true;
+}
+
+void EmotePlayer::ScheduleBlink(const EmoteBlink& blink, BlinkRuntime& state) {
+    state.rng = state.rng * 1664525u + 1013904223u;
+    const double unit = static_cast<double>(state.rng) / 4294967295.0;
+    const double min = std::max(0.0, blink.interval_min);
+    const double max = std::max(min, blink.interval_max);
+    state.wait = min + (max - min) * unit;
+}
+
+void EmotePlayer::AdvanceBlinks(double dt_ms) {
+    if (!model_) return;
+    double frames = dt_ms * kFramesPerMillisecond;
+    if (!(frames > 0)) return;
+    const auto& blinks = model_->Blinks();
+    for (size_t i = 0; i < blinks.size() && i < blinks_.size(); ++i) {
+        const EmoteBlink& blink = blinks[i];
+        BlinkRuntime& state = blinks_[i];
+        if (!blink.enabled || !blink.blink_enabled) continue;
+        // Long host steps continue across phase boundaries so the eye can not
+        // stay stuck half closed.
+        for (int step = 0; step < 8 && frames > 0; ++step) {
+            switch (state.phase) {
+            case BlinkRuntime::kIdle:
+                if (frames < state.wait) {
+                    state.wait -= frames;
+                    frames = 0;
+                } else {
+                    frames -= state.wait;
+                    state.wait = 0;
+                    state.phase = BlinkRuntime::kClosing;
+                }
+                break;
+            case BlinkRuntime::kClosing: {
+                const double span = std::max(0.0, blink.end - blink.begin);
+                const double speed = span * 2.5 / std::max(1.0, blink.frames);
+                const double remaining = speed > 0 ? (blink.end - state.frame) / speed : 0;
+                if (frames < remaining && remaining - frames > 1.0e-4) {
+                    state.frame += speed * frames;
+                    frames = 0;
+                } else {
+                    state.frame = blink.end;
+                    frames -= remaining;
+                    state.wait = blink.frames / 5.0;
+                    state.phase = BlinkRuntime::kClosedHold;
+                }
+                break;
+            }
+            case BlinkRuntime::kClosedHold:
+                if (frames < state.wait) {
+                    state.wait -= frames;
+                    frames = 0;
+                } else {
+                    frames -= state.wait;
+                    state.wait = 0;
+                    state.phase = BlinkRuntime::kOpening;
+                }
+                break;
+            case BlinkRuntime::kOpening: {
+                const double span = std::max(0.0, blink.end - blink.begin);
+                const double speed = span * 2.5 / std::max(1.0, blink.frames);
+                const double remaining = speed > 0 ? (state.frame - blink.begin) / speed : 0;
+                if (frames < remaining && remaining - frames > 1.0e-4) {
+                    state.frame -= speed * frames;
+                    frames = 0;
+                } else {
+                    state.frame = blink.begin;
+                    frames -= remaining;
+                    state.phase = BlinkRuntime::kIdle;
+                    ScheduleBlink(blink, state);
+                }
+                break;
+            }
+            }
+        }
+    }
+}
+
+void EmotePlayer::ApplyBlinks(std::map<std::string, double>& out) const {
+    if (!model_) return;
+    const auto& blinks = model_->Blinks();
+    for (size_t i = 0; i < blinks.size() && i < blinks_.size(); ++i) {
+        const EmoteBlink& blink = blinks[i];
+        const BlinkRuntime& state = blinks_[i];
+        if (state.phase == BlinkRuntime::kIdle) continue;
+        const auto it = out.find(blink.variable);
+        const double base = it == out.end() ? 0 : it->second;
+        const double span = blink.end - blink.begin;
+        if (base < std::min(blink.begin, blink.end) ||
+            base > std::max(blink.begin, blink.end) || std::abs(span) <= 1e-9)
+            continue;
+        const double amount = std::clamp((state.frame - blink.begin) / span, 0.0, 1.0);
+        out[blink.variable] = base + (blink.end - base) * amount;
+    }
+}
+
+double EmotePlayer::SelectorOptionValue(const EmoteSelector& selector, double value, size_t index) {
+    if (selector.items.empty() || index >= selector.items.size()) return 0;
+    const double clamped = std::clamp(value, 0.0, static_cast<double>(selector.items.size() - 1));
+    const double distance = std::min(std::abs(clamped - static_cast<double>(index)), 1.0);
+    const auto& item = selector.items[index];
+    return item.on + (item.off - item.on) * distance;
+}
+
+void EmotePlayer::ApplySelectors(std::map<std::string, double>& out) const {
+    if (!model_) return;
+    for (const auto& selector : model_->Selectors()) {
+        if (!selector.enabled || selector.items.empty()) continue;
+        const auto it = out.find(selector.label);
+        const double value = it == out.end() ? 0.0 : it->second;
+        for (size_t i = 0; i < selector.items.size(); ++i)
+            out[selector.items[i].label] = SelectorOptionValue(selector, value, i);
+    }
 }
 
 const EmoteTimeline* EmotePlayer::Timeline(const std::string& label) const {
@@ -336,7 +465,27 @@ void EmotePlayer::SetCoord(double x, double y, double transition_ms, double ease
     coord_y_.Set(y, transition_ms, ease);
 }
 
+void EmotePlayer::SetCoordAngle(double x, double y, double z, double angle) {
+    // Artemis setCoord(x, y, z, angle): an instant placement; z is depth and
+    // the compositor has no 3D stage.
+    z_ = z;
+    coord_x_.Set(x, 0, 0);
+    coord_y_.Set(y, 0, 0);
+    rot_.Set(angle, 0, 0);
+}
+
+void EmotePlayer::SetScaleOrigin(double scale, double origin_x, double origin_y) {
+    // Artemis setScale(scale, origin_x, origin_y): uniform scale around a
+    // model-space pivot (folded into the container position at render time).
+    origin_x_ = origin_x;
+    origin_y_ = origin_y;
+    scale_x_.Set(scale, 0, 0);
+    scale_y_.Set(scale, 0, 0);
+}
+
 void EmotePlayer::SetScale(double sx, double sy, double transition_ms, double ease) {
+    origin_x_ = 0;
+    origin_y_ = 0;
     scale_x_.Set(sx, transition_ms, ease);
     scale_y_.Set(sy, transition_ms, ease);
 }
@@ -345,18 +494,50 @@ void EmotePlayer::SetRot(double degrees, double transition_ms, double ease) {
     rot_.Set(degrees, transition_ms, ease);
 }
 
-void EmotePlayer::SetColor(uint32_t aarrggbb, double transition_ms, double ease) {
-    color_rgb_ = aarrggbb & 0xFFFFFFu;
-    alpha_.Set((aarrggbb >> 24) / 255.0, transition_ms, ease);
+void EmotePlayer::SetColor(uint32_t rrggbbaa, double transition_ms, double ease) {
+    // Artemis scripts build 0xRRGGBBff; the native driver's neutral is
+    // 0x808080FF (gray, opaque), so alpha is the low byte.
+    color_rgb_ = (rrggbbaa >> 8) & 0xFFFFFFu;
+    alpha_.Set((rrggbbaa & 0xFFu) / 255.0, transition_ms, ease);
 }
 
 uint32_t EmotePlayer::GetColor() const {
     const int a = std::clamp(static_cast<int>(std::lround(alpha_.value * 255)), 0, 255);
-    return (static_cast<uint32_t>(a) << 24) | color_rgb_;
+    return (color_rgb_ << 8) | static_cast<uint32_t>(a);
 }
 
 void EmotePlayer::SetGrayscale(double value, double transition_ms, double ease) {
     grayscale_.Set(std::clamp(value, 0.0, 1.0), transition_ms, ease);
+}
+
+void EmotePlayer::SetMeshDivisionRatio(double ratio) {
+    if (!(ratio > 0) || !std::isfinite(ratio)) return;
+    mesh_division_ratio_ = std::clamp(ratio, 0.05, 1.0);
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        Log(kLogInfo, "emote: mesh division ratio accepted; subdivision is not rendered yet");
+    }
+}
+
+void EmotePlayer::SetHairScale(double scale) {
+    if (!std::isfinite(scale)) return;
+    hair_scale_ = std::max(0.0, scale);
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        Log(kLogInfo, "emote: hair sway scale recorded; physics is not simulated");
+    }
+}
+
+void EmotePlayer::SetBustScale(double scale) {
+    if (!std::isfinite(scale)) return;
+    bust_scale_ = std::max(0.0, scale);
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        Log(kLogInfo, "emote: bust sway scale recorded; physics is not simulated");
+    }
 }
 
 void EmotePlayer::GetCoord(double* x, double* y) const {
@@ -389,6 +570,7 @@ void EmotePlayer::Progress(double delta_ms) {
     if (delta_ms > kMaxProgressMs) delta_ms = kMaxProgressMs;  // original Update clamp
     const double frames = delta_ms * kFramesPerMillisecond;
     base_frame_ += frames;  // idle base motion keeps breathing alive
+    AdvanceBlinks(delta_ms);
     coord_x_.Advance(delta_ms);
     coord_y_.Advance(delta_ms);
     rot_.Advance(delta_ms);
@@ -441,6 +623,13 @@ bool EmotePlayer::IsAnimating() const {
     for (const auto& e : playing_)
         if (e.second.blend.animating() || !e.second.finished) return true;
     return false;
+}
+
+void EmotePlayer::SkipToSync() {
+    if (!model_) return;
+    const auto& base = model_->Document().root.At("metadata").At("base");
+    const double sync = model_->SyncFrame(base.At("chara").string, base.At("motion").string);
+    if (sync >= 0) base_frame_ = sync;
 }
 
 void EmotePlayer::Skip() {
@@ -510,6 +699,12 @@ std::map<std::string, double> EmotePlayer::ComposeVariables() const {
                                      : base->second + (var.second - base->second) * blend;
         }
     }
+    // Eye blinks apply last, against whatever the timelines and script values
+    // produced (the reference host order).
+    ApplyBlinks(out);
+    // Selector controls resolve after the variable map is merged, overriding
+    // any timeline writes to their option variables.
+    ApplySelectors(out);
     return out;
 }
 
@@ -524,8 +719,17 @@ bool EmotePlayer::Render(Compositor& compositor, const std::string& id, std::str
     }
     // The bare id materializes a texture-less holder layer; scene children are
     // keyed id.<node> and inherit this transform through the dotted-id chain.
-    std::map<std::string, std::string> props{{"left", Num(coord_x_.value)},
-                                             {"top", Num(coord_y_.value)},
+    // Native order is translate(coord) * rotate * scale * translate(-origin):
+    // the pivot shift is folded into the container position.
+    const double radians = rot_.value * 3.14159265358979323846 / 180.0;
+    const double cosr = std::cos(radians), sinr = std::sin(radians);
+    const double pivot_x = scale_x_.value * cosr * origin_x_ - scale_y_.value * sinr * origin_y_;
+    const double pivot_y = scale_x_.value * sinr * origin_x_ + scale_y_.value * cosr * origin_y_;
+    // createEmoteLayer's width/height box centres the model origin; setCoord
+    // then moves the model inside that box (native model_origin transform).
+    const double center_x = layer_w_ * 0.5, center_y = layer_h_ * 0.5;
+    std::map<std::string, std::string> props{{"left", Num(center_x + coord_x_.value - pivot_x)},
+                                             {"top", Num(center_y + coord_y_.value - pivot_y)},
                                              {"rotate", Num(rot_.value)},
                                              {"xscale", Num(scale_x_.value * 100)},
                                              {"yscale", Num(scale_y_.value * 100)},
@@ -533,7 +737,13 @@ bool EmotePlayer::Render(Compositor& compositor, const std::string& id, std::str
                                              {"visible", hidden_ ? "0" : "1"},
                                              {"reversex", mirror_ ? "1" : "0"}};
     compositor.SetProps(id, props);
-    return scene_.Render(compositor, id, base_frame_, ComposeVariables(), error, grayscale_.value);
+    // E-mote SetColor tints are MODULATE2X: 0x80 is the neutral channel.
+    const auto doubled=[&](int shift) {
+        return std::min(0xFFu,((color_rgb_>>shift)&0xFFu)*2u);
+    };
+    const uint32_t multiply=(doubled(16)<<16)|(doubled(8)<<8)|doubled(0);
+    return scene_.Render(compositor, id, base_frame_, ComposeVariables(), error,
+                         grayscale_.value, multiply, mesh_division_ratio_);
 }
 
 bool EmotePlayer::Update(double now_ms, Compositor* compositor, const std::string& id) {
@@ -543,11 +753,17 @@ bool EmotePlayer::Update(double now_ms, Compositor* compositor, const std::strin
         if (!(dt > 0)) dt = 0;  // paused frame or clock reset
     }
     last_now_ms_ = now_ms;
-    Progress(dt);
+    // progress=false layers are driven by explicit progress()/step() calls.
+    if (auto_progress_) Progress(dt);
     if (!compositor) return true;
     std::string error;
     if (!Render(*compositor, id, error)) return false;
     return true;
+}
+
+bool EmotePlayer::Contains(Compositor& compositor, const std::string& id,
+                           const std::string& label, double x, double y) const {
+    return scene_.HitTest(compositor, id, label, x, y);
 }
 
 void EmotePlayer::RemoveLayers(Compositor& compositor, const std::string& id) {

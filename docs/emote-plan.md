@@ -39,11 +39,49 @@
 | E7 | 多文件（拆分）PSB 归档 | P1 | 样例文件 | `createEmoteLayer` 显式拒绝 |
 | E8 | 贴图格式补齐（DXT1/3、16bit、ETC1/PVRTC…） | P2 | E6 | 驱动格式串 |
 | E9 | 场景节点：模板/遮罩合成、网格扩展、粒子 | P2 | 真实模型 | 加载期显式拒绝清单 |
-| E10 | 控制类元数据（眨眼/口型/选择器/orbit…） | P2 | 真实模型 | `*Control` 元数据键 |
-| E11 | `SetColor` RGB tint（colormultiply） | P2 | 无 | 驱动 `SetColor %d %f %f` |
+| E10 | 控制类元数据（眨眼/口型/选择器/orbit…） | P1 | 真实模型 + krkrsdl3 对照 | `*Control` 元数据键 |
+| E11 | `SetColor` RGB tint（colormultiply）/ 模型镜像位 | P2 | 无 | 驱动 `SetColor %d %f %f`、`metadata.mirror` |
 | E12 | `CalcLayerFrameInfo` 是否需要暴露 | P2 | E1 | `0x1000b370` |
 | E13 | 驱动 record/replay 用作差分验证工具 | P3 | Windows 参照环境 | `0x1001ae50` 命令解析 |
 | E14 | 实测游戏与 GL 冒烟矩阵（持续） | P0 | 真机 | AGENT.md §9 |
+| E15 | 同步点与动画结束语义（`syncTime`/`skipToSync`） | P1 | 真实模型 | krkrsdl3 `GenerateAniTree` |
+| E16 | 命中测试（`contains`/`hitTest`、shape/blank 源） | P2 | 真实游戏调用 | krkrsdl3 `EmoteHitFrame` |
+| E17 | 播放状态序列化（`serialize`/`unserialize`） | P3（按需） | 存档系统 | krkrsdl3 `EmotePlayer` |
+
+> 外部参考：`/Users/weiss/github- engine/krkrsdl3/plugins/emoteplayer`（KiriKiri Z，
+> BSD 三条款式）。只提取行为/接口事实，不复制代码。对照明细见
+> 「附录 D — krkrsdl3 对照」。E10/E15 的依据来自该实现。
+>
+> 可执行细化（WP0–WP11：契约对齐/眨眼/选择器/attrcomp/镜像/PSB/图集/曲线/命中测试…）
+> 见 [`docs/emote-detail-plan.md`](emote-detail-plan.md)。
+>
+> **契约修订（WP0，真实游戏脚本证据）**：Lua 层 transition/fade/progress 单位是
+> **帧**（60fps，`ex.frametime=16.666`）而非毫秒；`setScale(scale, origin_x,
+> origin_y)`、`setCoord(x, y, z, angle)`；`getEmoteLayer` 接受表
+> `{id=…, next=…}`；甜蜜女友3 还调用 `setMeshDivisionRatio/setHairScale/
+> setBustScale`。落地前先做 WP0。
+
+## 落地状态
+
+| 项 | 状态 |
+|---|---|
+| E1 | **完成**：`docs/emote-driver-contract.md`（18 项命名方法 + 导出/容器/未恢复清单） |
+| E2 | 保持"等值反向"推断；未观察到真实调用，待含匹配变量的样本 |
+| E3 | Lua 面按脚本证据对齐（WP0）；驱动 flags bit0 清空语义与 Pass/Step 差异仍待真机复核 |
+| E4 | **完成**：新增 `ARTC_TEST_CGL`（macOS 离屏 CGL，无需 ANGLE/窗口）跑通 `compositor_regressions`，含分数灰度与 MODULATE2X `colormultiply` 像素断言 |
+| E5 | **决策 A**：物理显式不支持；`setHairScale/setBustScale` 已注册并记录 |
+| E6 | **完成**：v2 body 解密、宿主 seed 钩子、`lzfs` LZ4 帧；整包 `EmoteFilterTexture` 固定 key 路径按需 |
+| E7 | 维持单文件（参考宿主同样要求 exactly one）；无拆分样本 |
+| E8 | **完成（桌面格式）**：图集裁切 + DXT1/DXT3/16bit（4444/5551/5650）/A8L8/RGBX8 + mip 链容错，均有合成回归；ETC1/PVRTC 无命中样本，维持显式拒绝 |
+| E9 | **部分**：per-frame `color`（MODULATE2X 乘法）、blank `w:h:ox:oy` 描述符、`priority` 时间变序绘制、`bm` 混合模式（add/subtract/multiply/screen）、stencil 节点子树照常求值（mask 合成未做，呈"未裁剪"）已落地；真机立绘已渲染 |
+| E10 | **完成**：眨眼/选择器/attrcomp；clampControl/talkLabel 等待证据 |
+| E11 | **完成**：MODULATE2X 颜色 tint + 模型镜像位 |
+| E12 | **决策**：由 EmoteScene 内部覆盖（游戏脚本无调用），Lua 不暴露 |
+| E13 | 推迟（需 Windows 参照运行 + 工具） |
+| E14 | **部分完成**：host 冒烟通过（常轨脱离 300 帧、甜蜜女友3 prologue 1200 帧，立绘模型加载成功；仅遗留缺片 movie 告警）；**TyranorNext 实机**（`libartemis-clean.so`，甜蜜女友3 存档点）已验证立绘渲染，并据实机修复 inheritMask/bm/盒中心偏移/`Animated::Finish` 归零/HOLD 子树等 6 项；stencil mask 合成仍缺（脸部被未裁剪 mask 块覆盖）；官方内核 A/B 需要用户切换存档 |
+| E15 | **部分**：sync 推导 + C++ `SkipToSync` 完成；Lua 注册待真机证据 |
+| E16 | **完成**：`contains`/`hitTest` + shape/blank/clip 源 |
+| E17 | 按需（未观察到写档调用），暂不实现 |
 
 ---
 
@@ -130,15 +168,21 @@
   `uniform float`；现有 GL 回归只测了 `grayscale=1`（`compositor_regressions.cpp:541`）。
 - `emote_regressions` 只在桩合成器上验证了 prop 下发，未验证像素结果。
 
-### 方案
+### 方案（已落地）
 
-1. 在 `compositor_regressions.cpp` 增加分数灰度用例（如 0.5，期望
-   `mix(luma, c, 0.5)` 的通道值），归属 `ARTC_TEST_GLES` 构建。
-2. mac 宿主 + 实测游戏做灰度过渡冒烟（记录前后帧）。
+1. `compositor_regressions.cpp` 新增分数灰度用例（`grayscale=0.5` →
+   `mix(luma,c,0.5)`）与 `colormultiply=0x808080`（MODULATE2X 中性 0x80）
+   的像素断言，归属 GL 回归。
+2. 新增 `ARTC_TEST_CGL` 构建开关：macOS 用离屏 CGL 上下文跑同一份
+   `compositor_regressions`，无需 ANGLE 或窗口。无 drawable 的 CGL 默认
+   帧缓冲不可用，测试把 "屏幕"（含 `LayerShaders::Begin/End` 的
+   `parent`）指向自建 FBO，等价 EGL pbuffer。
+3. 真机/窗口观感仍建议在 mac 宿主复看。
 
 ### 验收标准
 
-- `ARTC_TEST_GLES=ON` 的 compositor 回归通过；mac 冒烟截图可辨。
+- `ARTC_TEST_CGL=ON` 的 `compositor_regressions` 通过（本机 Apple M1 Pro
+  已过）；`ARTC_TEST_GLES` 的 ANGLE 路径保持不变。
 
 ---
 
@@ -162,6 +206,10 @@
   friction/bendR），只驱动对应 part 链的旋转；`SetOuterForce` 作为外力注入。
 - **C（完整）**：按驱动 `EPWindControl`/`EPBustControl` 语义建模，代价最高。
 
+krkrsdl3 对照：其物理同样未实现（`updatePhysics` 空、`setOuterForce`/
+`startWind`/`initPhysics` 为 TODO 桩），说明"显式不支持"是与现有成熟实现一致的
+务实选择；**默认选 A**，仅当实测游戏确需物理时再启动 B。
+
 ### 验收标准
 
 - 选定分支有 ADR/注释依据；B/C 需要真实模型逐帧对比截图。
@@ -177,6 +225,11 @@
   `EmoteCheckValidObject(const uint8_t*, size)`（`0x10003ed0`）做
   "解密+可解析"校验；内部类 `PSBFilter`/`StructCryptFilter`。
 - 项目目前只解密头部（`psb.cpp:147-189`），README 标注"加密 PSB 不支持"。
+- krkrsdl3 对照（`emotefile::load`）：密钥 = `{0x075BCD15, 0x159A55E5,
+  0x1F123BB5, seed}`；seed 由宿主注入（`setEmotePSBDecryptSeed`），另提供
+  `setEmotePSBDecryptFunc(buffer,len)` 自定义解密回调（游戏可在 XP3 过滤之外
+  再叠一层）；**PSB v2 额外解密 `[offsetEncrypt, offsetChunkOffsets)`**；
+  另支持 `lzfs`（`04 22 4D 18`）LZ4 帧容器。
 
 ### 方案
 
@@ -205,6 +258,9 @@
 1. 从样例确定拆分格式（各部分 PSB 的资源如何拼接/重命名）。
 2. 在 `l_createEmoteLayer` 中合并多文件为一个 `PsbDocument`（资源偏移重写 +
    `sourceIconRenameMap` 应用），失败时事务性拒绝。
+3. krkrsdl3 走的是"附加文件"路线（`_attach` + `addEmoteFile`：主文件 + 附加
+   文件共同参与 chara/motion/变量查找，不做物理合并）——可作为备选实现路线，
+   先看样例文件的实际拆分语义再二选一。
 
 ### 验收标准
 
@@ -221,15 +277,29 @@
   以及 `mipMap`/`mipMapLevel`。
 - 项目仅 RGBA8/CI8/DXT5/BC7（`emote_model.cpp:78-115`）。
 
-### 方案
+### 方案（已落地）
 
-按实测游戏命中顺序补：DXT1/DXT3（CPU 解块，现成风格）→ 16bit 格式 →
-ETC1/PVRTC（出现在移动端图集时）→ mipmap 读取策略（当前直接报错或忽略）。
-每种格式补 `block_decode` 风格合成回归。
+按实测游戏命中顺序补齐：
+
+- **DXT1/DXT3**：`block_decode.cpp` 解块（BC1 含 1-bit alpha 打孔模式，
+  BC2 显式 4bit alpha），合成回归覆盖不透明/打孔/alpha 三种情况。
+- **16bit**：`RGBA4444`/`RGBA5551`/`RGBA5650`，以及 `A8L8`（亮度+alpha）、
+  `RGBX8`（丢弃 X 字节，桌面序仍按 A8R8G8B8 换序）。
+- **mipMap/mipMapLevel**：带 mip 描述符时接受 level 0 之后的附加数据并只读
+  level 0；无描述符时仍要求精确长度。
+- **ETC1/PVRTC**：实测（甜蜜女友3 DXT5、krkrsdl3 桌面路径）均无命中样本，
+  维持 `unsupported E-mote pixel format` 显式拒绝；待移动端图集样本再补。
+
+krkrsdl3 对照：其只支持 `RL`/`none` 与 RGBA8/调色板展开，格式上不提供借鉴；
+但暴露了一个本项目缺的**图集裁切**语义：`spec=win` 的 icon 带
+`clip{left,top,right,bottom}` + `texWidth/texHeight`，`pixel` chunk 是整张
+图集，需按 `left/top` 裁到 icon 尺寸（`readIconTobuffer` 的裁切分支）。
+本项目现在把 chunk 当整图解析，遇到图集模型会报长度不符或错位，需要一并补。
 
 ### 验收标准
 
-- 对应格式的裁剪图标像素与官方对照一致（色彩序/alpha 语义）。
+- 对应格式的裁剪图标像素与官方对照一致（色彩序/alpha 语义）；
+  `tests/emote_regressions.cpp` 的合成块已覆盖。
 
 ---
 
@@ -251,6 +321,47 @@ ETC1/PVRTC（出现在移动端图集时）→ mipmap 读取策略（当前直�
    排序。
 2. 优先实现最常见的 1–2 项（大概率是 `stencilType`/遮罩合成或网格扩展），
    其余维持显式失败。
+3. krkrsdl3 已有可参照的实现面：`meshDivision` 运行时 CPU 细分缓存、
+   `meshCombine`/`meshTransform`/`meshSyncChildMask`、节点 `priority`
+   重排（`motion.priority[0].content` 的索引列表决定求值顺序）、帧曲线
+   `zcc/ccc/cc`、per-frame `color`（缺省 `0xff808080`，`hasColor` 区分）、
+   `blank:w:h:ox:oy`/`shape/...`/`clip` 源、`stencilCompositeMaskLayerList`
+   + maskTarget 渲染。实现前先对照本项目拒绝清单，按需选做。
+
+### 已落地（甜蜜女友3 立绘证据）
+
+- **per-frame `color`**：8 处全为中性 `0x808080ff`，确认是 MODULATE2X 空间；
+  按 `2*c` 折算到直线因子并与播放器 tint 相乘，逐 part 下发
+  `colormultiply`（数值/数组两种写法都接受）。
+- **`blank` 描述符**：真实格式是 `icon="w:h:ox:oy"`（无 `blank:` 前缀），
+  解析后作为布局原点；`blank:w:h:ox:oy` 写法兼容保留。
+- **`priority`**：每个 motion 都有。按参考语义（content 反向枚举，
+  末项 rank 0 先画；缺项顺延）对直接子节点做稳定重排。该作 content 均为
+  恒等反序，视觉不变；其他游戏若真重排也按参考行为落地。
+
+### 实机修复（TyranorNext + 甜蜜女友3，2026-09-30）
+
+- `inheritMask` 白名单过严：真实立绘使用 `0x7FC/0x20007FC/0x200020C/
+  0x24007FC`，放宽为接受任意数值；部分继承（低 0x1FC 位不全）暂按全继承并
+  一次性日志。
+- 内容 `bm` 不再拒绝：低半字节映射 add(1)/reverse-subtract(2,5)/multiply(3)/
+  screen(4)，`layer_shader` 新增 multiply 与 reverse-subtract 混合函数。
+- `createEmoteLayer` 的 width/height 现在生效：模型原点位于盒中心
+  （参考宿主 `model_origin`），修复立绘整体偏移。
+- **`Animated::Set(v, 0, …)` 与 `Animated(v)` 现在同步写 `target`**：此前
+  `Skip()/Pass()` 的 `Finish()` 会把 setScale/setCoord/setColor 的即时值
+  全部归零，立绘整体不可见（实机主症状）。
+- 类型 12 stencil 节点不再丢弃子树：mask 层本身不绘制、子节点照常渲染；
+  **stencil 合成（mask 裁剪）仍未实现**，部分模型的脸部会被未裁剪的
+  mask/纯色部件覆盖。
+- HOLD（type 0）帧：节点自身不绘制，但子节点照常递归（对齐参考宿主
+  `visit_layer` 无条件访问 children）。
+
+### 剩余
+
+- stencil/mask 合成：需要按 mask 标签把 mask 层渲染到 stage 空间蒙版并在
+  合成阶段裁剪；当前为"未裁剪"降级（实机脸部可见色块）。
+- `meshSyncChild`、粒子、帧曲线数值应用：无命中样本，维持显式拒绝/跳过。
 
 ### 验收标准
 
@@ -258,7 +369,7 @@ ETC1/PVRTC（出现在移动端图集时）→ mipmap 读取策略（当前直�
 
 ---
 
-## E10 — 控制类元数据：眨眼/口型/选择器/orbit（P2）
+## E10 — 控制类元数据：眨眼/口型/选择器/orbit（P1）
 
 ### 问题与证据
 
@@ -276,6 +387,22 @@ ETC1/PVRTC（出现在移动端图集时）→ mipmap 读取策略（当前直�
 逐项找证据（驱动代码引用 / 游戏脚本调用 / E-mote 官方手册），产出
 "运行时 vs 编辑器"判定表；运行时项进入实现队列，编辑器项明确忽略。
 
+krkrsdl3 已证实两项是运行时功能，建议优先实现：
+
+- **自动眨眼（eyeControl）**：参数 `label/beginFrame/endFrame/
+  blinkFrameCount/blinkIntervalMin/Max`；空闲时随机等待 `[min,max]` 帧，
+  到时按 `blinkFrameCount` 做"闭→开"两端线性动画写入变量，播完后恢复
+  `baseVal` 并重新等待。注意：带眨眼/口型的立绘不能让 `animating` 恒真，
+  否则等待动画结束的对话流程会挂起（krkrsdl3 有 Nekopara2 类事故记录）。
+- **选择器（selectorControl）**：每项 `{label,onValue,offValue}`；
+  `setVariable(selectorLabel, opt)` 选中项写 `onValue`、其余写 `offValue`
+  （加载时先 select 0）；时间轴控制跳过被 selector 接管的变量。
+- **attrcomp**：`{chara,motion,layer,value}` 规则，`value<=0` 时在加载期把
+  目标节点标记为不渲染（本项目未解析，会导致应隐藏的层仍然显示）。
+- `eyebrowControl` krkrsdl3 只解析未驱动（与本项目现状相当），可暂缓；
+  `mouthControl`/`talkLabel`/`face_*` 在 krkrsdl3 中无运行时实现，仍需实测
+  游戏确认是否由引擎侧口型驱动。
+
 ### 验收标准
 
 - 判定表齐全；被判定为运行时的项有实现或明确的排期。
@@ -289,6 +416,8 @@ ETC1/PVRTC（出现在移动端图集时）→ mipmap 读取策略（当前直�
 - 驱动 `SetColor %d %f %f` 会乘色（着色器有 `colorMultiply`）；
   项目 `EmotePlayer::SetColor` 只改 alpha（注释称"合成器没有 RGB tint"，
   但 `Compositor` 已有 `colormultiply` prop 与着色器 uniform）。
+- 相关：模型自带的 `metadata.mirror` 位（krkrsdl3 在渲染矩阵上做
+  `scale(-1,1,1)` 自动镜像）本项目未解析，只支持 Lua `setMirror`。
 
 ### 方案
 
@@ -363,8 +492,82 @@ cmake --build build-mac -j8 --target artemis-mac
 cmake --build build-android -j8
 # 有 ANGLE 时：
 # cmake -B build-gles -DARTC_BUILD_TESTS=ON -DARTC_TEST_GLES=ON && ctest --test-dir build-gles
+# macOS 无 ANGLE/无窗口（离屏 CGL，等价 EGL pbuffer）：
+cmake -B build-cgl -DARTC_BUILD_TESTS=ON -DARTC_TEST_CGL=ON
+cmake --build build-cgl -j8 --target compositor_regressions && ./build-cgl/tests/compositor_regressions
 ./build-host/artc drive <游戏目录>/root.pfs --frames 400
 ```
+
+---
+
+## E15 — 同步点与动画结束语义（P1）
+
+### 问题与证据
+
+- krkrsdl3：`syncTime` = 该 motion 下**非 `parameterize` 节点**的最大有内容帧时刻
+  （递归子 motion），`selfSyncTime` 为文件层值；播放结束判定优先取
+  `syncTime`，其次 `selfSyncTime`，最后 `lastTime`；`skipToSync()` 直接把
+  `clockPassed` 跳到 `getSyncTime()`。
+- 本项目目前只按 `timeline.last_time`/`loop_end` 判断时间轴结束，没有"同步点"
+  概念；对话等待（`[wait emote]` 之类）在带眨眼/口型控制的立绘上可能挂起或
+  提前结束。
+
+### 方案
+
+1. 解析 motion 的 sync 相关字段（`syncTime`/`selfSyncTime`；krkrsdl3 的
+   `syncTime` 由帧数据推导，若 PSB 另有 `sync` 字段需一并确认），
+   在 `EmoteModel` 中建立 motion → sync 表。
+2. 在 `EmotePlayer` 增加 `SkipToSync()` 与结束判定顺序（sync → last），
+   并在 Lua 代理注册 `skipToSync`。
+3. 回归：合成 motion 含 sync 帧，验证结束时刻与 `skipToSync` 落点。
+
+### 验收标准
+
+- 带同步点的实测游戏对话流程不挂起、不提前；合成回归覆盖三种结束来源。
+
+---
+
+## E16 — 命中测试：`contains` / `hitTest` / shape 源（P2）
+
+### 问题与证据
+
+- krkrsdl3：渲染时收集 shape 节点几何（`shape/rect|circle|point|quad`，
+  单位方格 16×16）与非 shape 的可见网格，构建 `EmoteHitFrame`；
+  `hitTest([label,] x, y)` 用目标像素坐标、`contains` 保留旧仿射坐标；
+  越界几何按渲染目标裁切。
+- 本项目目前不注册 `contains`/`hitTest`（走 logging stub），也不支持
+  `blank:w:h:ox:oy`、`shape/...`、`clip` 源。
+
+### 方案
+
+1. `EmoteScene::Evaluate` 输出中标记 shape/blank 层并保留其变换与网格。
+2. 在 `EmotePlayer` 提供点包含查询（网格三角形判定），Lua 侧
+   `contains(label?,x,y)`/`hitTest(label?,x,y)` 两种重载。
+3. 回归：合成 shape 节点（矩形/圆/四边形）做包含/排除断言。
+
+### 验收标准
+
+- 实测游戏中立绘点击/触摸判定与官方一致；回归覆盖点/边/顶点与缩放旋转。
+
+---
+
+## E17 — 播放状态序列化（P3，按需）
+
+### 问题与证据
+
+- krkrsdl3 暴露 `serialize()/unserialize()`，把播放进度/变量/时间轴状态存入
+  存档并在读档后恢复。
+- 本项目存档（BOWS/BOWG 导入器）不含 E-mote 播放状态；读档后立绘会从初始
+  状态重建。是否需要在存档中恢复 E-mote 状态取决于实测游戏的存档脚本。
+
+### 方案
+
+先用真机确认游戏是否有 emote 状态写档/读档需求；有则按 `EmotePlayer` 内部
+状态设计紧凑序列化（变量/时间轴位置/blend），挂到现有存档管线。
+
+### 验收标准
+
+- 存档→读档后立绘状态（表情/时间轴/blend）与官方一致（或明确不需求）。
 
 ---
 
@@ -372,10 +575,12 @@ cmake --build build-android -j8
 
 - **E2/E3 的推断语义**（差分符号、flags/Pass/Step 分层）是本计划最大的
   不确定性来源；在真机验证前不要对外宣称完全兼容。
-- **E5 物理**投入产出比低且无官方公式文档，建议先维持显式不支持，按实测
-  游戏需要再启动。
+- **E5 物理**投入产出比低且无官方公式文档；krkrsdl3（KiriKiri 侧成熟实现）
+  同样未实现物理，佐证"显式不支持"是当前务实选择。
 - **E6/E7 依赖样例文件**：没有真实加密/拆分模型时无法闭环，需在任务开始
   时先收集样本。
+- **E15 syncTime 语义待真机确认**：krkrsdl3 的"结束判定优先 sync"是为
+  KiriKiri 游戏流程服务的；Artemis 侧是否同语义需用实测游戏日志验证。
 - 分析产物是 `/tmp` 临时文件，长期结论必须落盘到 `docs/emote-driver-contract.md`（E1）。
 
 ---
@@ -423,3 +628,51 @@ r2 -q -e bin.relocs.apply=true -c 'aaa; axt 0x1008cf20; pdf @ 0x100140d0' emoted
 
 关键虚表：`IEmotePlayer 0x1008b900`（94 槽）、`PEmotePlayer 0x1008ba88`
 （95 槽实现）、`IEmoteDevice 0x1008b898`、`PEmoteDevice 0x1008bc08`。
+
+---
+
+## 附录 D — krkrsdl3 `plugins/emoteplayer` 对照
+
+> 路径：`/Users/weiss/github- engine/krkrsdl3/plugins/emoteplayer`
+> （KiriKiri Z，BSD 三条款式许可）。仅提取行为/接口事实用于兼容规划，
+> 不复制代码。规模：`emotefile.cpp` 2831 行（PSB 解析）、`emoterunner.cpp`
+> 1251 行（求值/控制）、`emoteplayerclass.cpp` 1239 行（TJS 绑定）、
+> `D3DEmotePlayer.cpp` 471 行（D3D 绘制）。
+
+### D.1 该实现已做、本项目缺失（可借鉴）
+
+| 能力 | 关键事实 | 计划项 |
+|---|---|---|
+| 自动眨眼 | `eyeControl` 参数 `label/beginFrame/endFrame/blinkFrameCount/blinkIntervalMin/Max`；随机等待→两端线性闭开→恢复 `baseVal` | E10 |
+| 选择器 | `selectorControl` 每项 `{label,onValue,offValue}`；`selectValue(opt)` 只给选中项写 `onValue`；时间轴跳过 selector 变量；加载时先 select 0 | E10 |
+| attrcomp | `{chara,motion,layer,value}` 规则，`value<=0` 在加载期把节点标记为不渲染 | E10 |
+| 同步点 | `syncTime` = 非 parameterize 节点的最大内容帧时刻（递归子 motion）；结束判定 sync → selfSync → lastTime；`skipToSync()` | E15 |
+| 命中测试 | shape/blank 源、单位方格 16×16、矩形/圆/点/四边形子类型、网格三角形包含、越界按目标裁切 | E16 |
+| PSB 解密钩子 | 密钥 `{0x075BCD15,0x159A55E5,0x1F123BB5,seed}`；宿主 seed + 自定义回调；v2 解密 `[offsetEncrypt,offsetChunkOffsets)` | E6 |
+| LZ4 容器 | `lzfs` magic `04 22 4D 18`，块校验/内容长度/字典标志解析 | E6 |
+| 多文件 | `_attach` + `addEmoteFile`：主文件与附加文件共同查 chara/motion/变量（不物理合并） | E7 |
+| 图集裁切 | `spec=win` icon 的 `clip{left,top,right,bottom}` + `texWidth/texHeight`，pixel chunk 为整图集按 left/top 裁切 | E8 |
+| 网格/节点扩展 | `meshDivision`（运行时 CPU 细分缓存）、`meshCombine`/`meshTransform`/`meshSyncChildMask`、`priority` 列表重排 nodeList、帧曲线 `zcc/ccc/cc`、per-frame `color`（缺省 `0xff808080`，`hasColor` 区分）、stencil mask 列表 + maskTarget | E9 |
+| 运动级变量 | `"motionName/varName"` 寻址与 `parameterCache`；变量→tick 映射 `division*(v-lo)/(hi-lo)`（与本项目一致，互相印证） | E10 |
+| 状态持久化 | `serialize()/unserialize()`（变量/进度/时间轴） | E17 |
+| 额外变换/查询 | `setSlant/setZoom/setFlip/setCameraOffset`、`getVariableFrameList`、`getCommandList`、`getLayerGetter/getLayerMotion`、`getPlayingTimelineInfoList` | 按需 |
+
+### D.2 本项目更强 / 该实现未做（不必借鉴）
+
+- 贴图：仅 `RL`/`none` + RGBA8/调色板展开；本项目另有 DXT5/BC7/CI8。
+- 时间轴插值：仅线性，忽略 easing；本项目与官方 DLL 一致带 ease 权重。
+- 时间轴淡入淡出 / `setTimelineBlendRatio` / `pass` / `skip` / `playTimeline`
+  flags：均为 TODO 或直接忽略 flags。
+- 物理：`updatePhysics` 空实现，`setOuterForce`/`startWind`/`stopWind`/
+  `initPhysics` 全为 TODO 桩。
+- 时钟：`speedRatio=20`（约 20ms/tick）与本项目 60fps 帧钟不一致，属 KiriKiri
+  插件选择；以 Artemis 真机为准，不照搬。
+- 基础运动求值：该实现在模型带变量时把基础 motion 固定在 tick 0（只用控制
+  驱动）；本项目始终推进基础 motion。差异需用 Artemis 实测确认，勿直接改。
+
+### D.3 对计划的修订
+
+- E5 默认选项确认为 A（显式不支持）。
+- E10 提升为 P1，并把自动眨眼 / 选择器 / attrcomp 列为最先实现项。
+- 新增 E15（同步点）、E16（命中测试）、E17（按需持久化）。
+- E6/E8/E9 的方案补充了上述对照细节。

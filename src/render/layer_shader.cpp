@@ -273,8 +273,15 @@ bool LayerShaders::End(size_t depth,const LayerEffect& effect,uint32_t parent,bo
     glEnable(GL_BLEND);
     if(effect.blend=="add")glBlendFuncSeparate(GL_ONE,GL_ONE,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
     else if(effect.blend=="screen")glBlendFuncSeparate(GL_ONE,GL_ONE_MINUS_SRC_COLOR,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
+    else if(effect.blend=="multiply")glBlendFuncSeparate(GL_DST_COLOR,GL_ONE_MINUS_SRC_ALPHA,GL_ZERO,GL_ONE);
+    else if(effect.blend=="subtract") {
+        // E-mote native reverse-subtract: dst - premultiplied src.
+        glBlendEquationSeparate(GL_FUNC_REVERSE_SUBTRACT,GL_FUNC_ADD);
+        glBlendFuncSeparate(GL_ONE,GL_ONE,GL_ZERO,GL_ONE);
+    }
     else glBlendFuncSeparate(GL_ONE,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
     Quad(p,Surface{0,parent},g.width,g.height,top_down);
+    glBlendEquationSeparate(GL_FUNC_ADD,GL_FUNC_ADD);
     return true;
 }
 #else

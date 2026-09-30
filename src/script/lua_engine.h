@@ -248,6 +248,9 @@ public:
     // stale handle (after lydel or a same-id replace) fails soft instead
     // of dangling.
     EmotePlayer *FindEmote(const std::string &id);
+    // E-mote hit test (`contains`/`hitTest`): resolves the layer and runs the
+    // shape query against the live compositor transforms.
+    bool EmoteHitTest(const std::string &id, const std::string &label, double x, double y);
     // KrKr2-Next: engine clock in ms (same base as e:now()).
     double NowMs() const;
     // KrKr2-Next: fire due setonsoundfinish callbacks (called per frame).
