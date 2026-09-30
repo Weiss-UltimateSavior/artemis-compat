@@ -299,10 +299,16 @@ void InputThreadMain() {
     ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
     AInputQueue_attachLooper(g_state.input_queue, ALooper_forThread(), 1,
                              OnInputEvent, g_state.input_queue);
+    // Bounded poll: AInputQueue_detachLooper does not wake a blocked looper,
+    // so an infinite ALooper_pollOnce(-1) would never observe input_running
+    // going false. The join in OnInputQueueDestroyed (main thread, during
+    // Activity destroy) would then hang forever, the host's process kill
+    // would never run, and the next launch in the same process would show a
+    // dead white window.
     while (g_state.input_running) {
         int fd, events;
         void *data;
-        ALooper_pollOnce(-1, &fd, &events, &data);
+        ALooper_pollOnce(100, &fd, &events, &data);
     }
 }
 
