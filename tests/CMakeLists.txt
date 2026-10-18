@@ -21,9 +21,38 @@ foreach(backend gles desktop)
     add_test(NAME shader_backend_${backend} COMMAND shader_backend_${backend})
 endforeach()
 
+# The fake headers and EGL calls compile the production Android renderer on
+# any host. They are scoped to this executable, never to artemis_core/libartemis.
+add_executable(android_renderer_lifecycle_regressions
+    android_renderer_lifecycle_regressions.cpp ../src/render/renderer.cpp)
+target_compile_features(android_renderer_lifecycle_regressions PRIVATE cxx_std_17)
+target_compile_definitions(android_renderer_lifecycle_regressions PRIVATE
+    __ANDROID__=1 ARTC_HAS_GLES=1)
+target_include_directories(android_renderer_lifecycle_regressions PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/fake_android_renderer"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+add_test(NAME android_renderer_lifecycle_regressions
+    COMMAND android_renderer_lifecycle_regressions)
+set_tests_properties(android_renderer_lifecycle_regressions PROPERTIES
+    ENVIRONMENT "ARTC_SWAP_INTERVAL=1")
+
+# Compile the production JNI bridge; a recording Audio backend and a synthetic
+# JNI function table let the test observe ownership and serialization without
+# a VM, OpenSL device, GL context or commercial content. NDK supplies jni.h.
+if(ANDROID)
+    add_executable(debug_bridge_audio_regressions
+        debug_bridge_audio_regressions.cpp ../src/jni/jni_bridge.cpp)
+    target_link_libraries(debug_bridge_audio_regressions PRIVATE artemis::core)
+    add_test(NAME debug_bridge_audio_regressions COMMAND debug_bridge_audio_regressions)
+endif()
+
 add_executable(engine_context_regressions engine_context_regressions.cpp)
 target_link_libraries(engine_context_regressions PRIVATE artemis::core)
 add_test(NAME engine_context_regressions COMMAND engine_context_regressions)
+
+add_executable(system_voice_regressions system_voice_regressions.cpp)
+target_link_libraries(system_voice_regressions PRIVATE artemis_core)
+add_test(NAME system_voice_regressions COMMAND system_voice_regressions)
 
 add_executable(runtime_regressions runtime_regressions.cpp)
 target_link_libraries(runtime_regressions PRIVATE artemis_core)
@@ -144,6 +173,12 @@ endif()
 # system EGL/GLES). Off by default.
 option(ARTC_TEST_GLES "Run compositor regressions using desktop ANGLE" OFF)
 if(ARTC_TEST_GLES)
+    add_executable(font_style_regressions font_style_regressions.cpp)
+    target_compile_definitions(font_style_regressions PRIVATE
+        ARTC_TEST_DATA="${ARTC_TEST_DATA_DIR}")
+    target_link_libraries(font_style_regressions PRIVATE artemis_core)
+    add_test(NAME font_style_regressions COMMAND font_style_regressions)
+
     add_executable(compositor_regressions compositor_regressions.cpp)
     if(ARTC_TEST_MOVIE)
         target_sources(compositor_regressions PRIVATE "${ARTC_TEST_MOVIE}")
@@ -224,4 +259,11 @@ find_program(ARTC_PYTHON3 NAMES python3 python)
 if(ARTC_PYTHON3)
     add_test(NAME android_exports_checker
              COMMAND ${ARTC_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/android_exports_checker_test.py)
+endif()
+
+# Synthetic hit geometry exercises host pause and Lua drag behavior without GL.
+if(_artc_graphics STREQUAL "HEADLESS")
+    add_executable(session_pause_regressions session_pause_regressions.cpp)
+    target_link_libraries(session_pause_regressions PRIVATE artemis::core)
+    add_test(NAME session_pause_regressions COMMAND session_pause_regressions)
 endif()

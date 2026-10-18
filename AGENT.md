@@ -85,14 +85,11 @@ jni / host（宿主壳）
     （GL 丢失）都会 `DropGlyphGl()`；新增缓存消费路径必须接入这两个钩子。
   - GL 侧：页纹理按 generation 增量上传（`GlyphPageTexture`）——重复文本
     零栅格化、零合成、零上传。
-- **GL 丢失三态交接**：窗口丢失（后台/切回）默认**保留 EGL 上下文**——宿主只调
-  `Renderer::ReleaseSurface()` 解绑 Surface，上下文与 GPU 资源（图层纹理/glyph
-  页/FBO）连同引擎会话一起存活，回前台在原上下文上重建 Surface 即可原地续画，
-  **不重 boot**；后台期间由宿主 `PauseClock/PauseAudio` 挂起（不渲染、不推进、
-  不出声）。仅当上下文真丢失（旧上下文上无法重建 Surface，`ContextReused()==false`）
-  才回退到 `ReleaseGl` 全量释放（含 glyph 页）+ 重 boot 经 tag 重建（历史行为）。
-  任何新持久的 GL 资源必须进 `ReleaseGl`（回退路径），并在上下文存活路径下保持
-  Surface 无关（不得依赖默认帧缓冲）。
+- **Android 窗口与 GL 生命周期分离**：普通窗口 surface 丢失时，将现有 EGL
+  context 绑定到 parking pbuffer；重新接入窗口只替换 surface，保留 Lua、runner、
+  图层和 glyph 页，不调用 `ResetSession` 或重跑 boot。真正 `EGL_CONTEXT_LOST`
+  时保留 CPU 会话并暂停渲染；无损 GL 重建尚未实现，不能用自动重 boot 冒充恢复。
+  显式 `[reset]`/退出仍释放资源；任何新持久 GL 资源必须接入 `ReleaseGl`。
 - 文本层不再持有 per-SetText 纹理（`l.texture == 0`，glyph 引用共享图集页）；
   判定「层是否有内容」用 `!l.texture && l->glyphs.empty()`，不能只看 texture。
 
@@ -172,7 +169,7 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
 - `pluto_codec.cpp:129-131`：longjmp 前的 C++ 对象析构顺序约定。
 - `save_storage.cpp`：O_EXCL + fsync + rename 原子写。
 - E-mote proxy：userdata + `__gc` + placement new + live registry 防悬挂。
-- GL 丢失三态交接 + `ReleaseGl` 全量释放（`native_activity.cpp:465-476`）。
+- 普通窗口 surface detach/reattach 保留会话；真正 GL 丢失与显式 reset 分开处理。
 - 输入独立 looper 线程防 ANR（`native_activity.cpp:295-319`）。
 - AsbRunner `current_file_` 缓存避免每帧重解析（`asb_parser.cpp:123`）。
 - `InputState` 的 Decide 语义：指针激活在**释放**沿、键盘在**按下**沿。
@@ -196,8 +193,8 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
   - glyph cache 一期颜色计入 key（解耦二期看命中率）；
   - T2-3 一期保留压缩数据整段常驻，分块流式读并入 Tier 3；
   - T2-1 未把 VideoPlayer/EmotePlayer 迁到 Compositor：它们由 LuaEngine 持有，
-    而 LuaEngine 归 EngineContext，单一所有权已成立；GL 丢失时整上下文重建，
-    `ReleaseGl` 完整性不受影响。
+    而 LuaEngine 归 EngineContext，单一所有权已成立；普通窗口替换保留对象图，
+    显式会话重启仍需完整 `ReleaseGl`，真正 GL 丢失的无损恢复尚未实现。
 
 ---
 
@@ -216,15 +213,20 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
      （ANDROID 节优先，WINDOWS 兜底）。幂等，直到 Shutdown 后才可换包；
      嵌入宿主可传第四个参数指定独立存档目录，省略时仍写在包旁。
   2. `Start(with_compositor=true)`（GL 上下文当前）：建 Compositor 并 `Init`，
-     建 LuaEngine 并 `Init`。GL 丢失/[reset] 后再次调用即可重建会话（内部先
-     `ReleaseGl`）。DebugBridge 这类无 GL 路径用 `Start(false)`。
+     建 LuaEngine 并 `Init`。显式会话重启后再次调用可重建会话（内部先
+     `ReleaseGl`），这会重新初始化而非无损恢复进度；普通窗口替换不得走该路径。
+     DebugBridge 这类无 GL 路径用 `Start(false)`。
   3. `BootFramework(drain_boot_queue=false)`：建 AsbRunner、跑
      `system/first.iet`、接 jump/call/stop。`drain_boot_queue=true` 是 CLI
      专用（boot 跳转立即执行，处理器此时尚未安装——保持历史顺序）。
-- 会话级重启（GL 丢失 / `[reset]` tag）统一走 `ResetSession()`，不要手动
-  `lua.reset()`；`Shutdown()` 才释放 compositor/audio/packs。
-- 跨宿主查询（JNI 音频暂停钩子等）用 `EngineContext::Current()/SetCurrent()`
-  注册表；它是引用登记，不承担所有权，`Shutdown()` 会自动摘除。
+- 显式会话重启（如 `[reset]` tag）统一走 `ResetSession()`，不要手动
+  `lua.reset()`；`Shutdown()` 才释放 compositor/audio/packs。普通后台/窗口替换
+  不重启会话；真正 context loss 当前暂停渲染，不自动销毁 VM 后重跑 boot。
+- `EngineContext::Current()/SetCurrent()` 是非拥有引用登记，不能用它推断宿主
+  所有权或直接跨线程操作对象图；`Shutdown()` 会自动摘除。JNI 音频钩子向
+  NativeActivity 工作线程发布意图，另在 DebugBridge 的宿主锁内操作其自有会话。
+- 暂停只清物理输入，不运行可能访问 GL 的 `dragout`；有可绘制上下文时先处理
+  已有 `[reset]`，否则再取消旧拖拽与移动标记，随后才接收新输入。
 - **LuaEngine 不再拥有 Audio/AudioChannels**：`Init` 收非拥有指针，析构只清
   `videos_/emotes_`；`[alldelete]` 用 `Audio::StopAll()` + `AudioChannels::Reset()`
   而不是 `delete/new`。音频指针为空时音频 tag 自然 no-op（门控已存在）。
@@ -278,7 +280,9 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
 - 宿主帧循环门控（保守条件，全静止才跳过）：
   `rev != drawn_rev || PendingAnimationMs(now)>0 || TransitionActive() ||
   PendingTextMs(now)>0` 才 `Clear+Draw+Present`；`Update(now)` 与 `EndFrame()`
-  必须每帧执行。窗口重建 / GL 丢失 / `[reset]` 后必须 `drawn_rev = ~0ull`。
+  在运行中的逻辑帧必须执行；普通后台暂停时停住脚本/动画时钟，不推进 VM。
+  窗口重新附着或显式 `[reset]` 后必须 `drawn_rev = ~0ull`；真正 context loss
+  在无损恢复实现前保持渲染暂停。
 - 视频帧不需要单独信号：`VideoPlayer` 每帧走 `SetPixels → SetProps`，天然 bump。
   若未来新增不 bump 的帧源，必须补 bump 而不是加宽门控。
 - 门控是行为开关：上线按「完全静止」灰度，五个重点场景（对话推进、长 tween、
@@ -297,8 +301,8 @@ rg 'make_unique<PackManager>|make_unique<LuaEngine>' src  # 只应命中 core/en
   且三种情况旧档必须完好。
 - **帧节奏**：Android 用 `eglSwapInterval(1)` 让 swap 提供背压；只有「未绘制帧」
   或 `Renderer::SwapPaced()==false`（`ARTC_SWAP_INTERVAL=0` 设备回退）才 sleep。
-  上下文重建（窗口丢失/重 init）处必须重设 interval——`Renderer::Init` 是唯一
-  设置点，不要在别处复制这段逻辑。
+  窗口 surface 重新附着或初始创建时必须重设 interval；统一由
+  `Renderer::ApplySwapInterval` 设置，不要在宿主或其他入口复制该逻辑。
 - **门控与 vsync 的耦合**：跳过绘制的帧没有 swap 背压，必须保留一个空闲等待
   （当前 16ms sleep），否则会忙等烧 CPU；二期若换 Choreographer/条件变量，
   替换的是这个空闲等待，不是 swap 路径。

@@ -279,8 +279,12 @@ public:
     // Advance tweens/transition to `now_ms`; returns true when the picture
     // changed (the caller redraws). Call once per frame before Draw().
     bool Update(double now_ms);
-    // Remaining animation time (ms) — what [wt] / the transition wait need.
+    // All active animation time for host redraw gating, including infinity
+    // for decorative loops that continue beneath the running script.
     double PendingAnimationMs(double now_ms) const;
+    // Script barriers wait only for finite tweens and active transitions.
+    // Infinite loop/yoyo effects keep animating without blocking [wait]/[wt].
+    double PendingBlockingAnimationMs(double now_ms) const;
 
     // [trans time= rule= vague=] — crossfade from the frame that was on
     // screen when the tag arrived to the current layer state. `rule` is the
@@ -356,6 +360,7 @@ private:
                        DrawOrderScratch& scratch) const;
     static bool DrawOrderLess(const DrawOrderEntry& a,const DrawOrderEntry& b);
     DrawOrderScratch draw_order_scratch_;
+    double PendingAnimationMsImpl(double now_ms, bool blocking_only) const;
     uint64_t revision_ = 0;
     struct GlProgram {
         uint32_t program = 0;

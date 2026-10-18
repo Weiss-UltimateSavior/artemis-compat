@@ -66,7 +66,7 @@ bool LuaEngine::TagWait(const std::string &tag, TagAttrs &m) {
                 pending = compositor_->TransitionRemainingMs(NowMs());
             else
                 pending = std::max(
-                    compositor_->PendingAnimationMs(NowMs()),
+                    compositor_->PendingBlockingAnimationMs(NowMs()),
                     compositor_->PendingTextMs(NowMs()));
         }
         if (pending > 1) SetTimedWait(static_cast<int>(std::min(pending, 2147483647.0)), m["input"] != "0");
@@ -100,7 +100,7 @@ bool LuaEngine::TagWait(const std::string &tag, TagAttrs &m) {
         // twice after a transition. The second must complete immediately
         // when there is no animation left. `@` establishes a click wait.
         const double pending = compositor_
-            ? compositor_->PendingAnimationMs(NowMs()) : 0;
+            ? compositor_->PendingBlockingAnimationMs(NowMs()) : 0;
         if (pending > 1) SetTimedWait(static_cast<int>(std::min(pending, 2147483647.0)), in == "1" || in == "2");
     }
     return true;
@@ -193,7 +193,7 @@ bool LuaEngine::TagSaveSs(const std::string &tag, TagAttrs &m) {
 // [wt] waits for running tweens/transitions.
 bool LuaEngine::TagWt(const std::string &tag, TagAttrs &m) {
     if (!compositor_) return false;
-    const double pending = compositor_->PendingAnimationMs(NowMs());
+    const double pending = compositor_->PendingBlockingAnimationMs(NowMs());
     if (pending > 1) SetTimedWait(static_cast<int>(std::min(pending, 2147483647.0)));
     return true;
 }

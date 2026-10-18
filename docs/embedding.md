@@ -64,13 +64,48 @@ Status after the Android compatibility change:
   functions) and forwards to the same pause/resume code as the legacy unmangled
   `PauseAllInstance` / `ResumeAllInstance`, which remain exported.
 - The engine thread now sleeps (16 ms) while no window/renderer is available
-  instead of spinning; the window-loss reset policy is unchanged. A blocking
+  instead of spinning. Ordinary window changes preserve the session as described
+  below. A blocking
   `[dialog]` returns immediately once Activity destruction has begun, so
   `onDestroy` joining the engine thread cannot be held by a pending dialog.
 
 The Android library compiles and retains its entry points; Tyranor-Next runtime
 compatibility is not established by those checks. No Android device run was
 performed for this build integration.
+
+The mangled and unmangled audio hooks publish the same NativeActivity worker
+intent; they do not select a session through the non-owning Current registry.
+The worker consumes that intent separately from Activity/session pause.
+DebugBridge installation, tag execution and its direct audio operations use one
+host mutex. The hooks also apply the request to the DebugBridge-owned context;
+a pause requested before installation is inherited before its init script can
+start sounds. Neither audio path uses Current() to infer session ownership.
+
+### Android window and session recovery
+
+An ordinary NativeActivity pause or window-surface replacement does not imply
+loss of the EGL context. The renderer creates a compatible parking pbuffer;
+when the window disappears it binds the existing context there, releases only
+the window surface, and attaches a replacement surface to that same context.
+The Lua VM, script cursor, layers and glyph pages remain in the opened session.
+Window replacement does not call `ResetSession` or rerun `BootFramework`.
+
+Activity pause or an unavailable surface pauses script/animation clocks and
+audio, and discards stale queued input. Resume reattaches the surface, reapplies
+the swap interval, restores the clocks and forces a redraw. Legacy sound-only
+JNI pause intent remains separate from Activity/session pause.
+Suspension drops physical release edges without calling Lua. A drawable resume
+first handles a pending script reset; otherwise it cancels the old drag, clears
+its moved marker and dispatches at most one `dragout` before accepting new input.
+An unavailable/lost context never dispatches that deferred callback; reset drops
+cancellation state belonging to the old VM.
+
+A real `EGL_CONTEXT_LOST` is a different state. CPU session state is retained
+and rendering is suspended; lossless GL reconstruction is not implemented.
+The engine does not silently run the boot chain to mask this failure. Explicit
+script `[reset]` remains a requested session restart. This policy does not restore
+a session after Android kills the process. Original-shell and actual-device
+background/resume acceptance must be reported separately from fake-EGL tests.
 
 ## Backend selection
 
