@@ -162,7 +162,7 @@ bool LuaEngine::TagSave(const std::string &tag, TagAttrs &m) {
 }
 
 bool LuaEngine::TagLoad(const std::string &tag, TagAttrs &m) {
-    if (m.count("file")) LoadSnapshot(m.at("file"));
+    if (m.count("file")) return LoadSnapshot(m.at("file"));
     return true;
 }
 
