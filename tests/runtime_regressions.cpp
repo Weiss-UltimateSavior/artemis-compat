@@ -961,6 +961,18 @@ int main(int argc, char** argv) {
     for(int i=0;i<4 && !runner.Halted();++i) runner.ExecuteLine(script);
     Check(script.DoString("assert(ahits==1 and bhits==1)", "macro index wins elsewhere"),
           "bare label away from the boot context resolves through the macro index");
+
+    Check(!lua.QueuedTagHasExplicitFile(), "an empty tag queue has no explicit file");
+    Check(lua.DoString("e:enqueueTag{'jump',label='main'}", "queue bare jump"),
+          "queue a bare-label jump");
+    Check(!lua.QueuedTagHasExplicitFile(), "bare-label jumps must stay parked for context resolution");
+    std::string queued_name;
+    std::vector<std::pair<std::string, std::string>> queued_attrs;
+    Check(lua.PopQueuedTag(&queued_name, &queued_attrs), "discard bare jump fixture");
+    Check(lua.DoString("e:enqueueTag{'jump',file='system/save.asb',label='save'}",
+                       "queue explicit jump"), "queue an explicit-file jump");
+    Check(lua.QueuedTagHasExplicitFile(), "explicit-file jumps can drain at a command boundary");
+    Check(lua.PopQueuedTag(&queued_name, &queued_attrs), "discard explicit jump fixture");
     std::filesystem::remove(path);
 
     // ---- E-mote Lua surface: contract failures, then a full synthetic model ----
