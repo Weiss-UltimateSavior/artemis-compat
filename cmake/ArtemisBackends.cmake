@@ -2,8 +2,8 @@
 # standalone JNI/Activity host is built by an embedded consumer.
 set(ARTC_GRAPHICS_BACKEND AUTO CACHE STRING "Renderer: AUTO, HEADLESS, GLES or DESKTOP_GL")
 set_property(CACHE ARTC_GRAPHICS_BACKEND PROPERTY STRINGS AUTO HEADLESS GLES DESKTOP_GL)
-set(ARTC_AUDIO_BACKEND AUTO CACHE STRING "Audio: AUTO, OPENSL, OHAUDIO or NULL")
-set_property(CACHE ARTC_AUDIO_BACKEND PROPERTY STRINGS AUTO OPENSL OHAUDIO NULL)
+set(ARTC_AUDIO_BACKEND AUTO CACHE STRING "Audio: AUTO, OPENSL, OHAUDIO, APPLE or NULL")
+set_property(CACHE ARTC_AUDIO_BACKEND PROPERTY STRINGS AUTO OPENSL OHAUDIO APPLE NULL)
 set(ARTC_GLES_TARGET "" CACHE STRING "Existing target providing matching EGL/GLES libraries and headers")
 string(TOUPPER "${ARTC_GRAPHICS_BACKEND}" _artc_graphics)
 string(TOUPPER "${ARTC_AUDIO_BACKEND}" _artc_audio)
@@ -20,7 +20,7 @@ if(_artc_audio STREQUAL "AUTO")
     elseif(OHOS)
         set(_artc_audio OHAUDIO)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-        message(FATAL_ERROR "Apple audio is not implemented. Select NULL explicitly for compile-only validation.")
+        set(_artc_audio APPLE)
     else()
         set(_artc_audio NULL)
     endif()
@@ -66,6 +66,17 @@ elseif(_artc_audio STREQUAL "OHAUDIO")
         message(FATAL_ERROR "OHAUDIO requires an OpenHarmony toolchain")
     endif()
     target_link_libraries(artemis_platform INTERFACE ohaudio)
+elseif(_artc_audio STREQUAL "APPLE")
+    # Apple AudioUnit output (iOS AURemoteIO / macOS AUHAL). Explicit selection
+    # is allowed on any Darwin toolchain so the backend stays regression-testable
+    # on the macOS desktop; AUTO still picks NULL there.
+    if(NOT APPLE)
+        message(FATAL_ERROR "APPLE requires a Darwin toolchain (macOS or iOS)")
+    endif()
+    target_compile_definitions(artemis_platform INTERFACE ARTC_AUDIO_APPLE=1)
+    target_link_libraries(artemis_platform INTERFACE
+        "-framework AVFoundation" "-framework CoreAudio"
+        "-framework AudioToolbox" "-framework Foundation")
 elseif(NOT _artc_audio STREQUAL "NULL")
     message(FATAL_ERROR "Unknown ARTC_AUDIO_BACKEND: ${ARTC_AUDIO_BACKEND}")
 endif()

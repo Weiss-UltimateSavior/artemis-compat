@@ -47,6 +47,15 @@ add_executable(audio_ownership_regressions audio_ownership_regressions.cpp)
 target_link_libraries(audio_ownership_regressions PRIVATE artemis_core)
 add_test(NAME audio_ownership_regressions COMMAND audio_ownership_regressions)
 
+# The Apple backend regressions exercise the real Audio::Impl, which is
+# selected at configure time, so they only exist for ARTC_AUDIO_BACKEND=APPLE.
+get_target_property(ARTC_PLATFORM_DEFINES artemis_platform INTERFACE_COMPILE_DEFINITIONS)
+if(ARTC_PLATFORM_DEFINES AND "ARTC_AUDIO_APPLE=1" IN_LIST ARTC_PLATFORM_DEFINES)
+    add_executable(apple_audio_regressions apple_audio_regressions.cpp)
+    target_link_libraries(apple_audio_regressions PRIVATE artemis_core)
+    add_test(NAME apple_audio_regressions COMMAND apple_audio_regressions)
+endif()
+
 add_executable(asb_runner_regressions asb_runner_regressions.cpp)
 target_link_libraries(asb_runner_regressions PRIVATE artemis_core)
 add_test(NAME asb_runner_regressions COMMAND asb_runner_regressions)

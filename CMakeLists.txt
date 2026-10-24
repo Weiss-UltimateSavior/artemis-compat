@@ -82,6 +82,13 @@ file(GLOB_RECURSE ARTC_CORE_SOURCES CONFIGURE_DEPENDS
 if(_artc_audio STREQUAL "OHAUDIO")
     list(REMOVE_ITEM ARTC_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio.cpp")
     list(APPEND ARTC_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ohos/audio_ohos.cpp")
+elseif(_artc_audio STREQUAL "APPLE")
+    enable_language(OBJCXX)
+    list(REMOVE_ITEM ARTC_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio.cpp")
+    list(APPEND ARTC_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/apple/audio_apple.mm")
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/apple/audio_apple.mm"
+        PROPERTIES LANGUAGE OBJCXX)
 endif()
 add_library(artemis_core STATIC ${ARTC_CORE_SOURCES})
 add_library(artemis::core ALIAS artemis_core)
@@ -131,6 +138,13 @@ if(ARTC_BUILD_MAC_HOST)
     target_compile_options(artemis-mac PRIVATE -Wno-deprecated-declarations)
     target_link_libraries(artemis-mac PRIVATE artemis_deps
         "-framework Cocoa" "-framework OpenGL")
+    if(_artc_audio STREQUAL "APPLE")
+        # artemis-mac recompiles the core sources itself and does not link
+        # artemis_platform, so carry the audio backend's frameworks here.
+        target_link_libraries(artemis-mac PRIVATE
+            "-framework AVFoundation" "-framework CoreAudio"
+            "-framework AudioToolbox" "-framework Foundation")
+    endif()
 endif()
 
 # ---- install rules (T3-1): downstream integration should not hand-copy so's
