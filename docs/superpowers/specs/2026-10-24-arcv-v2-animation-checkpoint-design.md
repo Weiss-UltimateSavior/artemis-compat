@@ -17,7 +17,7 @@ ARCV 版本号和现有 variables／flow／scopes／scene 四个 section 保持�
 - `id`、`param`、`from`、`to`；
 - `time`、`delay`、`ease`；
 - `repeat`／`yoyo` 对应的原始循环语义；
-- 已播放时间 `elapsed`，从 `start_ms` 到捕获时钟；
+- 有符号相位时间 `elapsed = capture_now - start_ms`；顺序 tween set 中尚未到达的后续段允许为负；
 - `started` 与 `from_current`，避免未开始动画提前固化起点，也避免已开始动画在读档后重新取错起点。
 
 恢复时以恢复时钟减去 `elapsed` 重建 `start_ms`，保留原相位。有限动画按原方向到达既有 `FinalValue()`；无限及 yoyo 动画从原周期位置继续。先恢复所有图层，再恢复 tween，保证属性读取针对正确的语义图层。
@@ -38,7 +38,7 @@ runner 中已保存的剩余等待继续按原 deadline 恢复，但不得要求
 
 读取阶段先验证全部动画命令：
 
-- 数值必须有限，`elapsed`、`time`、`delay` 和帧时间不得为负；
+- 数值必须有限，`time`、`delay` 和帧时间不得为负；`elapsed` 只要求有限并允许顺序段的负值；
 - repeat／loop 不得低于 `-1`，索引和时间总和必须能安全表示；
 - tween 必须引用已知参数，anime 必须引用可读取的图像资源；
 - 帧序列、循环语义和 `from_current` 必须自洽；
