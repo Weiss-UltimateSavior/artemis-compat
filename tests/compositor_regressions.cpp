@@ -1484,6 +1484,50 @@ int main() {
               "steady-state Draw reuses the id index and owner list");
         c.ReleaseGl();c.Init(32,32);
     }
+    {
+        artc::Compositor scene;
+        scene.Init(32,32);
+        scene.SetPackManager(&packs);
+        Check(scene.LoadFont(name),"checkpoint scene font");
+        Check(scene.LoadImage("bg","small.tga"),"checkpoint scene image");
+        scene.SetProps("bg",{{"left","12"},{"top","34"},{"alpha","128"},{"visible","1"}});
+        scene.SetMessageLayered("bg",false);
+        Check(scene.SetText("adv","restored text",25,0xffffff,720,
+                            {{"align","left"},{"outline","1"}}),"checkpoint scene text");
+        std::vector<artc::SavedCommand> commands;
+        std::string error;
+        Check(scene.CaptureScene(commands,error),"capture semantic scene");
+        Check(!commands.empty(),"scene emits semantic commands");
+        scene.DeleteLayer("bg");
+        scene.DeleteLayer("adv");
+        Check(scene.RestoreScene(commands,error),"restore semantic scene");
+        Check(scene.Layers().size()==2,"restored layer count");
+        const auto& bg=scene.Layers().at(0);
+        Check(bg.source_file=="small.tga" && bg.x==12 && bg.y==34 &&
+              bg.alpha>0.49f && bg.alpha<0.51f && bg.visible && bg.message_overlay,
+              "restore image semantics");
+        const auto& adv=scene.Layers().at(1);
+        Check(adv.text=="restored text" && adv.text_size==25 &&
+              adv.text_wrap_width==720 && adv.text_style.at("align")=="left",
+              "restore text semantics");
+
+        const auto before=scene.Layers();
+        scene.SetLayerMesh("bg",{0,0,0,0, 1,0,1,0, 0,1,1,1});
+        Check(!scene.CaptureScene(commands,error),"mesh checkpoint is explicitly unsupported");
+        Check(scene.Layers().size()==before.size(),"unsupported capture preserves layers");
+        scene.SetLayerMesh("bg",{});
+        scene.AddTween("bg",{{"param","alpha"},{"from","128"},{"to","0"},{"time","100"}},0);
+        Check(!scene.CaptureScene(commands,error),"active tween checkpoint is explicitly unsupported");
+        scene.DeleteTweens("bg");
+        scene.Draw();
+        Check(scene.BeginTransition(0,100,{},0,0,0),"start unsupported transition");
+        Check(!scene.CaptureScene(commands,error),"active transition checkpoint is explicitly unsupported");
+        auto bad=commands;
+        bad.push_back({"lyc",{{"id","missing"},{"file","missing.png"}}});
+        Check(!scene.RestoreScene(bad,error),"missing scene resource rejected before mutation");
+        Check(scene.Layers().size()==before.size(),"invalid restore preserves current layers");
+        scene.ReleaseGl();
+    }
     std::filesystem::remove_all(save_directory);
     std::filesystem::remove(path);
     c.Shutdown();
