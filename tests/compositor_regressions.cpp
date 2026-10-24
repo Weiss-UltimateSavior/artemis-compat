@@ -1591,8 +1591,10 @@ int main() {
               "completed finite anime holds its last frame");
         scene.DeleteTweens("bg");
         scene.Draw();
-        Check(scene.BeginTransition(0,100,{},0,0,0),"start unsupported transition");
-        Check(!scene.CaptureScene(commands,error),"active transition checkpoint is explicitly unsupported");
+        Check(scene.BeginTransition(0,100,{},0,0,0),"start transition");
+        Check(scene.CaptureScene(commands,error),"capture final scene during transition");
+        Check(scene.RestoreScene(commands,error),"restore final transition scene");
+        Check(!scene.TransitionActive(),"old-frame overlay is not restored");
         const auto before_invalid=scene.Layers();
         auto bad=commands;
         bad.push_back({"lyc",{{"id","missing"},{"file","missing.png"}}});

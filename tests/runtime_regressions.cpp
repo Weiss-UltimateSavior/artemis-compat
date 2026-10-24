@@ -1804,6 +1804,10 @@ int main(int argc, char** argv) {
             function dragging(e,p) end
             e:setEventHandler{onSave="save_cb",onLoad="load_cb"}
         )","install checkpoint v2 callbacks"),"install checkpoint v2 callbacks");
+        scene.AddTween("bg",{{"param","left"},{"from","4"},{"to","20"},{"time","100"}},0);
+        scene.Draw();
+        Check(scene.BeginTransition(0,100,{},0,0,0),"start checkpoint v2 transition");
+        engine.SetTimedWait(20,false);
         Check(engine.SaveSnapshot("one.dat"),"commit v2 checkpoint");
         engine.DispatchTag("var",{{"name","scr"},{"data","changed"}});
         flow.DiscardFlow();
@@ -1815,6 +1819,12 @@ int main(int argc, char** argv) {
               "v2 restores nested runner");
         Check(scene.Layers().size()==2 && scene.Layers().at(1).text=="first text",
               "v2 restores image and text");
+        Check(!scene.TransitionActive(),"v2 drops only the old transition overlay");
+        scene.Update(50);
+        Check(scene.Layers().at(0).x>11.9f && scene.Layers().at(0).x<12.1f,
+              "v2 restores the active tween phase");
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        Check(!engine.IsWaiting(),"v2 releases the restored timed wait");
         Check(engine.DoString("assert(restored==1)","callback count"),"onLoad fires once");
         engine.ClickAt(16,16);
         engine.RunEnterFrame();
