@@ -1516,16 +1516,51 @@ int main() {
         Check(!scene.CaptureScene(commands,error),"mesh checkpoint is explicitly unsupported");
         Check(scene.Layers().size()==before.size(),"unsupported capture preserves layers");
         scene.SetLayerMesh("bg",{});
-        scene.AddTween("bg",{{"param","alpha"},{"from","128"},{"to","0"},{"time","100"}},0);
-        Check(!scene.CaptureScene(commands,error),"active tween checkpoint is explicitly unsupported");
+        scene.AddTween("bg",{{"param","left"},{"from","12"},{"to","60"},
+                            {"time","1000"},{"delay","100"},{"loop","0"},{"yoyo","-1"}},1000);
+        scene.SetAnimeFrame("cursor","init","small.tga",0,-1,{{"clip","0,0,4,4"}},1000);
+        scene.SetAnimeFrame("cursor","add","small.tga",500,-1,{{"clip","4,0,4,4"}},1000);
+        scene.SetAnimeFrame("cursor","add","small.tga",1000,-1,{{"clip","8,0,4,4"}},1000);
+        scene.SetAnimeFrame("cursor","end","",1000,-1,{},1000);
+        scene.Update(1250);
+        Check(scene.CaptureScene(commands,error),"capture active tween and anime");
+        const auto tween=std::find_if(commands.begin(),commands.end(),[](const auto& command) {
+            return command.name=="lytween";
+        });
+        Check(tween!=commands.end() && tween->attrs.at("param")=="left" &&
+              std::stod(tween->attrs.at("elapsed"))==250 &&
+              tween->attrs.at("repeat")=="-1" && tween->attrs.at("yoyo")=="1",
+              "capture tween loop and signed phase");
+        const auto anime_end=std::find_if(commands.begin(),commands.end(),[](const auto& command) {
+            return command.name=="anime" && command.attrs.at("mode")=="end";
+        });
+        Check(anime_end!=commands.end() && anime_end->attrs.at("loop")=="-1" &&
+              std::stod(anime_end->attrs.at("elapsed"))==250,
+              "capture anime loop and phase");
+        scene.BeginTweenSet();
+        scene.AddTween("bg",{{"param","top"},{"from","34"},{"to","80"},
+                            {"time","200"},{"delay","100"}},1250);
+        scene.AddTween("bg",{{"param","top"},{"to","20"},{"time","200"}},1250);
+        scene.EndTweenSet(1250);
+        Check(scene.CaptureScene(commands,error),"capture ordered tween set");
+        const auto future=std::find_if(commands.begin(),commands.end(),[](const auto& command) {
+            return command.name=="lytween" && command.attrs.at("param")=="top" &&
+                   command.attrs.at("to")=="20.000000";
+        });
+        Check(future!=commands.end() && std::stod(future->attrs.at("elapsed"))==-300,
+              "future tween-set segment retains a negative phase");
+        scene.BeginTweenSet();
+        Check(!scene.CaptureScene(commands,error),"uncommitted tween set is unsupported");
+        scene.EndTweenSet(1250);
         scene.DeleteTweens("bg");
         scene.Draw();
         Check(scene.BeginTransition(0,100,{},0,0,0),"start unsupported transition");
         Check(!scene.CaptureScene(commands,error),"active transition checkpoint is explicitly unsupported");
+        const auto before_invalid=scene.Layers();
         auto bad=commands;
         bad.push_back({"lyc",{{"id","missing"},{"file","missing.png"}}});
         Check(!scene.RestoreScene(bad,error),"missing scene resource rejected before mutation");
-        Check(scene.Layers().size()==before.size(),"invalid restore preserves current layers");
+        Check(scene.Layers().size()==before_invalid.size(),"invalid restore preserves current layers");
         scene.ReleaseGl();
     }
     std::filesystem::remove_all(save_directory);

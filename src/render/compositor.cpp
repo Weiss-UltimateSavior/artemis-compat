@@ -2595,8 +2595,11 @@ bool CheckpointAttrs(const SavedCommand& command, std::string& error) {
 
 bool Compositor::CaptureScene(std::vector<SavedCommand>& output, std::string& error) const {
     error.clear();
-    if (!tweens_.empty() || !anime_.empty() || trans_active_) {
-        return CheckpointError(error, "active scene animation is unsupported");
+    if (collecting_tweens_) {
+        return CheckpointError(error, "uncommitted tween set is unsupported");
+    }
+    if (trans_active_) {
+        return CheckpointError(error, "active scene transition is unsupported");
     }
     std::vector<SavedCommand> next;
     for (const auto& layer : layers_) {
@@ -2656,6 +2659,34 @@ bool Compositor::CaptureScene(std::vector<SavedCommand>& output, std::string& er
             next.push_back({"print", {{"id", layer.id}, {"data", layer.text},
                                       {"width", CheckpointFloat(layer.text_wrap_width)}}});
         }
+    }
+    for (const auto& tw : tweens_) {
+        next.push_back({"lytween", {
+            {"id", tw.id}, {"param", tw.param},
+            {"from", CheckpointFloat(tw.from)}, {"to", CheckpointFloat(tw.to)},
+            {"time", std::to_string(tw.time_ms)}, {"delay", std::to_string(tw.delay_ms)},
+            {"ease", std::to_string(tw.ease)}, {"repeat", std::to_string(tw.repeat)},
+            {"yoyo", tw.yoyo ? "1" : "0"},
+            {"elapsed", std::to_string(now_ms_ - tw.start_ms)},
+            {"started", tw.started ? "1" : "0"},
+            {"from_current", tw.from_current ? "1" : "0"}
+        }});
+    }
+    for (const auto& entry : anime_) {
+        const auto& id = entry.first;
+        const auto& state = entry.second;
+        for (size_t i = 0; i < state.frames.size(); ++i) {
+            SavedCommand command{"anime", state.frames[i].props};
+            auto& attrs = command.attrs;
+            attrs["mode"] = i == 0 ? "init" : "add";
+            attrs["id"] = id;
+            attrs["file"] = state.frames[i].file;
+            attrs["time"] = std::to_string(state.frames[i].time_ms);
+            next.push_back(std::move(command));
+        }
+        next.push_back({"anime", {{"mode", "end"}, {"id", id}, {"file", ""},
+            {"time", std::to_string(state.total_ms)}, {"loop", std::to_string(state.loop)},
+            {"elapsed", std::to_string(now_ms_ - state.start_ms)}}});
     }
     output = std::move(next);
     return true;
