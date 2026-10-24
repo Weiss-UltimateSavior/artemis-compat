@@ -2450,7 +2450,9 @@ void Compositor::DeleteLayer(const std::string &id) {
 }
 bool Compositor::LoadFont(const std::string &file) {
     Log(kLogInfo, "font (host, no raster): " + file);
-    return false;
+    font_path_ = file;
+    font_ready_ = true;
+    return true;
 }
 bool Compositor::SetText(const std::string &id, const std::string &text,
                          float size, uint32_t color, float wrapWidth,

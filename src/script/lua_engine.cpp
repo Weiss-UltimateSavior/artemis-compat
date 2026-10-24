@@ -2083,14 +2083,29 @@ bool LuaEngine::SaveSnapshot(const std::string& file) {
     }
     saving_=true;const bool ready=CallEvent(handler->second,{{"file",file}},false);saving_=false;
     if(!ready)return false;
-    VariableBank items;
+
+    CheckpointV2 checkpoint;
     for(const auto& v:vars_) {
         const auto prefix=v.first.substr(0,2);
-        if(prefix!="g." && prefix!="s." && prefix!="t.")items.insert(v);
+        if(prefix!="g." && prefix!="s." && prefix!="t.")checkpoint.variables.insert(v);
+    }
+    if(script_runner_) checkpoint.flow=script_runner_->CaptureFlow();
+    checkpoint.scopes=var_scopes_;
+    std::string error;
+    if(compositor_ && !compositor_->CaptureScene(checkpoint.scene,error)) {
+        Log(kLogError,"save: unsupported scene state: "+error);return false;
+    }
+    for(const auto& layer:lyevents_) for(const auto& event:layer.second) {
+        const auto& entry=event.second;
+        SavedCommand command{"lyevent",{entry.attrs.begin(),entry.attrs.end()}};
+        command.attrs["id"]=layer.first;
+        command.attrs["type"]=event.first;
+        command.attrs["mode"]=entry.enabled?"enable":"disable";
+        checkpoint.scene.push_back(std::move(command));
     }
     std::vector<uint8_t> bytes;
-    if(!EncodeVariableBank(items,true,bytes) || !WriteSaveFile(path,bytes)) {
-        Log(kLogError,"save: checkpoint write failed "+file);return false;
+    if(!EncodeCheckpointV2(checkpoint,bytes,error) || !WriteSaveFile(path,bytes)) {
+        Log(kLogError,"save: checkpoint write failed "+file+": "+error);return false;
     }
     const bool system=SaveSystemData();
     Log(system?kLogInfo:kLogError,"save: checkpoint "+file+(system?" committed":" saved; system bank failed"));
@@ -2105,18 +2120,74 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
     const auto path=SavePath(save_dir_,file);
     std::vector<uint8_t> bytes;
     if(path.empty() || !ReadSaveFile(path,bytes)) {Log(kLogError,"load: cannot read slot "+file);return false;}
-    NativeSave snapshot;std::string error;
     const bool native=bytes.size()>=4 && std::memcmp(bytes.data(),"BOWS",4)==0;
-    const bool decoded=native ? DecodeNativeSave(bytes,snapshot,error) : DecodeVariableBank(bytes,true,snapshot.variables);
-    if(!decoded) {Log(kLogError,"load: invalid snapshot "+file+": "+error);return false;}
-    // Validate native Pluto blobs before touching the running state. Raw scalar
-    // variables remain strings; closures/VM pointers fail explicitly.
+
+    if(!native) {
+        if(bytes.size()>=8 && std::memcmp(bytes.data(),"ARCV",4)==0 && bytes[4]==1) {
+            Log(kLogError,"load: ARCV v1 has no runtime state");return false;
+        }
+        CheckpointV2 checkpoint;
+        std::string error;
+        if(!DecodeCheckpointV2(bytes,checkpoint,error)) {
+            Log(kLogError,"load: invalid checkpoint "+file+": "+error);return false;
+        }
+        if(!ValidateBankGraphs(L_,checkpoint.variables,error)) {Log(kLogError,"load: "+error);return false;}
+        if(script_runner_ && !script_runner_->ValidateFlow(checkpoint.flow,error)) {
+            Log(kLogError,"load: invalid runner flow: "+error);return false;
+        }
+        if(compositor_ && !compositor_->ValidateScene(checkpoint.scene,error)) {
+            Log(kLogError,"load: invalid scene: "+error);return false;
+        }
+        for(const auto& command:checkpoint.scene) if(command.name=="lyevent") {
+            const auto id=command.attrs.find("id"),type=command.attrs.find("type");
+            if(id==command.attrs.end() || id->second.empty() || type==command.attrs.end() || type->second.empty()) {
+                Log(kLogError,"load: invalid layer event");return false;
+            }
+        }
+
+        LoadPhase phase=LoadPhase::None;
+        auto advance=[&](LoadPhase next){ if(!ValidLoadTransition(phase,next)) Log(kLogWarn,std::string("load: phase order violated -> ")+LoadPhaseName(next)); phase=next; };
+        advance(LoadPhase::ResetEphemeral);
+        for(auto it=vars_.begin();it!=vars_.end();) {
+            const auto prefix=it->first.substr(0,2);
+            if(prefix!="g." && prefix!="s.")it=vars_.erase(it);else ++it;
+        }
+        for(auto& v:checkpoint.variables) {
+            const auto prefix=v.first.substr(0,2);
+            if(prefix!="g." && prefix!="s." && prefix!="t.")vars_[v.first]=std::move(v.second);
+        }
+        advance(LoadPhase::RestoreData);
+        tag_queue_.clear();SuspendWait();SetAutoMode(false);
+        save_image_={};
+        videos_.clear();emotes_.clear();if(audio_)audio_->StopAll();if(sounds_)sounds_->Reset();
+        onsoundfinish_.clear();pending_click_=false;drag_id_.clear();lyevents_.clear();
+        if(script_runner_)script_runner_->DiscardFlow();
+        ClearVarScopes();
+        var_scopes_=checkpoint.scopes;
+        advance(LoadPhase::SnapshotScene);
+        if(compositor_ && !compositor_->RestoreScene(checkpoint.scene,error)) {
+            Log(kLogError,"load: scene restore failed: "+error);return false;
+        }
+        if(script_runner_ && !script_runner_->RestoreFlow(checkpoint.flow,error)) {
+            Log(kLogError,"load: runner restore failed: "+error);return false;
+        }
+        for(const auto& command:checkpoint.scene) if(command.name=="lyevent") {
+            StoreLyevent(command.attrs.at("id"),{command.attrs.begin(),command.attrs.end()});
+        }
+        advance(LoadPhase::RebuildDerived);
+        if(!CallEvent(handler->second,{{"file",file}},false)) return false;
+        Log(kLogInfo,"load: v2 checkpoint restored via onLoad: "+file+
+            " layers="+std::to_string(checkpoint.scene.size()));
+        return true;
+    }
+
+    NativeSave snapshot;std::string error;
+    if(!DecodeNativeSave(bytes,snapshot,error)) {Log(kLogError,"load: invalid snapshot "+file+": "+error);return false;}
     if(!ValidateBankGraphs(L_,snapshot.variables,error)) {Log(kLogError,"load: "+error);return false;}
     for(const auto& c:snapshot.layers)
         if(c.name!="lyc" && c.name!="lyprop" && c.name!="lyevent" && c.name!="lytween" && c.name!="anime") {
             Log(kLogError,"load: unsupported saved layer command "+c.name);return false;
         }
-    // Global/system banks belong to this installation, not to a scenario slot.
     LoadPhase phase=LoadPhase::None;
     auto advance=[&](LoadPhase next){ if(!ValidLoadTransition(phase,next)) Log(kLogWarn,std::string("load: phase order violated -> ")+LoadPhaseName(next)); phase=next; };
     advance(LoadPhase::ResetEphemeral);
@@ -2134,8 +2205,6 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
     videos_.clear();emotes_.clear();if(audio_)audio_->StopAll();if(sounds_)sounds_->Reset();
     onsoundfinish_.clear();pending_click_=false;drag_id_.clear();lyevents_.clear();
     if(script_runner_)script_runner_->DiscardFlow();
-    // Macro scopes belong to the discarded flow: the frames that would pop
-    // them are gone.
     ClearVarScopes();
     advance(LoadPhase::SnapshotScene);
     if(compositor_) {
@@ -2144,12 +2213,9 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
         for(const auto& c:snapshot.layers)
             DispatchTag(c.name,{c.attrs.begin(),c.attrs.end()});
     }
-    // The registered framework callback reconstructs message pages, audio and
-    // the scenario cursor from its restored scr/log/btn graph (quickjump). [B]
-    // must run after [A] above or the replay would clobber it.
     advance(LoadPhase::RebuildDerived);
     if(!CallEvent(handler->second,{{"file",file}},false)) return false;
-    Log(kLogInfo,std::string("load: ")+(native?"native snapshot":"checkpoint")+" restored via onLoad: "+file+
+    Log(kLogInfo,"load: native snapshot restored via onLoad: "+file+
         " layers="+std::to_string(snapshot.layers.size()));
     return true;
 }

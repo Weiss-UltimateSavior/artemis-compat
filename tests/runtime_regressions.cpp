@@ -97,7 +97,9 @@ static void EmoteProxyLifetimeRegression(artc::PackManager& packs, const artc::I
             e:setEventHandler{onLoad='restore_lifetime'}
         )","proxy instance identity"),"same-id replacement, failed creation, deletion, aliases and GC respect instance identity");
         std::vector<uint8_t> snapshot;
-        Check(artc::EncodeVariableBank({},true,snapshot) &&
+        artc::CheckpointV2 lifetime_checkpoint;
+        std::string lifetime_error;
+        Check(artc::EncodeCheckpointV2(lifetime_checkpoint,snapshot,lifetime_error) &&
               artc::WriteSaveFile((root/"lifetime.dat").string(),snapshot),"write synthetic proxy lifetime checkpoint");
         Check(engine.LoadSnapshot("lifetime.dat"),"snapshot clear expires old proxy before restorer recreates same id");
         destroyed_token=engine.EmoteLifetime("life.child");
@@ -717,7 +719,15 @@ int main(int argc, char** argv) {
 
     // A tiny pack containing only synthetic scripts tests re-entrant native
     // dispatch: the Lua callback replaces the script being executed.
+    std::string scene_tga(18, 0);
+    scene_tga[2] = 2; scene_tga[12] = 1; scene_tga[14] = 1;
+    scene_tga[16] = 32; scene_tga[17] = 0x28;
+    scene_tga.append("\xff\0\0\xff", 4);
     const std::map<std::string,std::string> files = {
+        {"flow_main.iet", "*start\n[stepFM0]\n[call file=\"flow_sub.iet\" label=\"sub\"]\n[stepFM2]\n[return]\n"},
+        {"flow_sub.iet", "*sub\n[stepFS1]\n[stepFS2]\n[return]\n"},
+        {"image.tga", scene_tga},
+        {"font.ttf", "synthetic font placeholder"},
         {"main.iet", "*main\n[calllua function=redirect]\n[calllua function=wrong]\n[stop]\n"},
         {"next.iet", "*next\n[calllua function=right]\n"},
         {"menu.iet", "*menu\n[calllua function=right]\n[return]\n"},
@@ -1164,15 +1174,28 @@ int main(int argc, char** argv) {
             advance_emote(3)
             assert(model:getVariable('expression')==5 and model:getTimelineBlendRatio('safety_loop')==0.625)
         )","E17 logical scene"),"E17 prepares only self-authored script state");
-        Check(saving.SaveSnapshot("synthetic.dat"),"E17 commits checkpoint through onSave and atomic ARCV pipeline");
+        Check(saving.DoString("save_emote(e,{file='synthetic.dat'})","E17 callback"),"E17 invokes onSave preparation");
+        Check(saving.DoString("checkpoint_data=e:var('emote_checkpoint')","E17 graph"),"E17 captures public graph");
+        artc::CheckpointV2 v2_checkpoint;
+        lua_getglobal(saving.state(),"checkpoint_data");
+        size_t checkpoint_size=0;
+        const char* checkpoint_data=lua_tolstring(saving.state(),-1,&checkpoint_size);
+        v2_checkpoint.variables["emote_checkpoint"].assign(checkpoint_data,checkpoint_size);
+        lua_pop(saving.state(),1);
+        std::vector<uint8_t> encoded;
+        std::string encode_error;
+        Check(artc::EncodeCheckpointV2(v2_checkpoint,encoded,encode_error) &&
+              artc::WriteSaveFile((restorer_root/"synthetic.dat").string(),encoded),
+              "E17 commits public checkpoint graph through atomic ARCV pipeline");
         Check(saving.DoString("assert(save_calls==1 and load_calls==0)","E17 save callback count"),"E17 onSave runs once");
     } // The original player, Lua VM and compositor are gone before restoration.
     std::vector<uint8_t> checkpoint;
-    artc::VariableBank checkpoint_bank;
+    artc::CheckpointV2 decoded_checkpoint;
+    std::string decode_error;
     Check(artc::ReadSaveFile((restorer_root/"synthetic.dat").string(),checkpoint) &&
           checkpoint.size()>4 && std::string(checkpoint.begin(),checkpoint.begin()+4)=="ARCV" &&
-          artc::DecodeVariableBank(checkpoint,true,checkpoint_bank) && checkpoint_bank.size()==1 &&
-          checkpoint_bank.count("emote_checkpoint")==1,
+          artc::DecodeCheckpointV2(checkpoint,decoded_checkpoint,decode_error) &&
+          decoded_checkpoint.variables.size()==1 && decoded_checkpoint.variables.count("emote_checkpoint")==1,
           "E17 slot is our ARCV graph, not a private-player serializer or native BOWS export");
     {
         artc::Compositor restored_compositor;
@@ -1729,6 +1752,105 @@ int main(int argc, char** argv) {
         Check(parsed.lines[4].command == "if", "tight-comment tag line");
         Check(parsed.lines[5].command == "\x01""TEXT",
               "text after a tag bracket stays scenario text");
+    }
+    // ARCV v2 end-to-end: flow, scene, macro scopes, and input registrations.
+    {
+        const auto slot_dir = std::filesystem::temp_directory_path() /
+            ("artemis-checkpoint-v2-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(slot_dir);
+        artc::Compositor scene;
+        scene.Init(32,32);
+        scene.SetPackManager(&fixture);
+        scene.SetSaveDirectory(slot_dir.string());
+        Check(scene.LoadFont("font.ttf"),"load checkpoint v2 font");
+        artc::LuaEngine engine;
+        engine.SetSaveDir(slot_dir.string());
+        Check(engine.Init(&fixture,ini,"android",32,32,&scene),"init checkpoint v2 engine");
+        artc::AsbRunner flow;
+        flow.SetPackSource(&fixture);
+        flow.SetLuaEngine(&engine);
+        engine.SetScriptRunner(&flow);
+        Check(flow.Jump("flow_main.iet","start"),"start checkpoint v2 flow");
+        for(int i=0;i<4;++i) flow.ExecuteLine(engine);
+        Check(flow.CurrentFile()=="flow_sub.iet","nested flow is active before save");
+        Check(scene.LoadImage("bg","image.tga"),"load checkpoint v2 image");
+        scene.SetProps("bg",{{"left","4"},{"top","5"},{"w","16"},{"h","16"}});
+        Check(scene.SetText("adv","first text",25,0xffffff,720,{{"align","left"}}),
+              "load checkpoint v2 text");
+        scene.SetProps("adv",{{"left","0"},{"top","0"},{"w","32"},{"h","32"}});
+        engine.PushVarScope({{"time","500"}});
+        engine.DispatchTag("lyevent",{{"id","adv"},{"type","click"},{"function","advance"}});
+        engine.DispatchTag("lyevent",{{"id","adv"},{"type","drag"},{"function","dragging"}});
+        Check(engine.DoString(R"(
+            restored=0
+            function save_cb(e,p) end
+            function load_cb(e,p) restored=restored+1 end
+            function advance(e,p) restored=restored+10 end
+            function dragging(e,p) end
+            e:setEventHandler{onSave="save_cb",onLoad="load_cb"}
+        )","install checkpoint v2 callbacks"),"install checkpoint v2 callbacks");
+        Check(engine.SaveSnapshot("one.dat"),"commit v2 checkpoint");
+        engine.DispatchTag("var",{{"name","scr"},{"data","changed"}});
+        flow.DiscardFlow();
+        scene.DeleteLayer("bg");
+        scene.DeleteLayer("adv");
+        engine.ClearVarScopes();
+        Check(engine.LoadSnapshot("one.dat"),"restore v2 checkpoint");
+        Check(flow.CurrentFile()=="flow_sub.iet" && flow.StackFiles().size()==2,
+              "v2 restores nested runner");
+        Check(scene.Layers().size()==2 && scene.Layers().at(1).text=="first text",
+              "v2 restores image and text");
+        Check(engine.DoString("assert(restored==1)","callback count"),"onLoad fires once");
+        engine.ClickAt(16,16);
+        engine.RunEnterFrame();
+        Check(engine.DoString("assert(restored==11)","event restored"),"v2 restores per-type lyevent");
+        Check(engine.DoString("assert(e:var('time')=='500')","scope value"),"macro scope restored");
+        engine.PopVarScope();
+        Check(engine.DoString("assert(e:var('time')=='0')","scope pop"),"macro previous value restored");
+        flow.ExecuteLine(engine);
+        Check(flow.CurrentFile()=="flow_sub.iet","restored runner continues");
+
+        const auto before_file=flow.CurrentFile();
+        const auto before_layers=scene.Layers().size();
+        const auto before_restored=engine.DoString("assert(restored==11)","state before bad loads");
+        Check(before_restored,"state before bad loads");
+        artc::VariableBank legacy_items{{"scr","legacy"}};
+        std::vector<uint8_t> legacy;
+        Check(artc::EncodeVariableBank(legacy_items,true,legacy),"encode v1 fixture");
+        Check(artc::WriteSaveFile((slot_dir/"legacy.dat").string(),legacy),"write v1 fixture");
+        Check(!engine.LoadSnapshot("legacy.dat"),"v1 rejected explicitly");
+        Check(flow.CurrentFile()==before_file && scene.Layers().size()==before_layers,
+              "v1 rejection preserves runner and scene");
+
+        std::vector<uint8_t> valid;
+        Check(artc::ReadSaveFile((slot_dir/"one.dat").string(),valid),"read valid v2 slot");
+        auto corrupt=valid;corrupt.back()^=1;
+        Check(artc::WriteSaveFile((slot_dir/"corrupt.dat").string(),corrupt),"write corrupt v2 fixture");
+        Check(!engine.LoadSnapshot("corrupt.dat"),"bad CRC rejected");
+        Check(flow.CurrentFile()==before_file && scene.Layers().size()==before_layers,
+              "bad CRC preserves current state");
+        auto bad_flow=flow.CaptureFlow();bad_flow.current_file="missing.iet";
+        artc::CheckpointV2 bad_checkpoint;
+        bad_checkpoint.flow=bad_flow;
+        std::vector<uint8_t> bad_bytes;
+        std::string bad_error;
+        Check(artc::EncodeCheckpointV2(bad_checkpoint,bad_bytes,bad_error),"encode missing-script fixture");
+        Check(artc::WriteSaveFile((slot_dir/"missing-script.dat").string(),bad_bytes),"write missing-script fixture");
+        Check(!engine.LoadSnapshot("missing-script.dat"),"missing script rejected before mutation");
+        bad_checkpoint.scene.push_back({"lyc",{{"id","bad"},{"file","missing.png"}}});
+        Check(artc::EncodeCheckpointV2(bad_checkpoint,bad_bytes,bad_error),"encode missing-image fixture");
+        Check(artc::WriteSaveFile((slot_dir/"missing-image.dat").string(),bad_bytes),"write missing-image fixture");
+        Check(!engine.LoadSnapshot("missing-image.dat"),"missing image rejected before mutation");
+        Check(flow.CurrentFile()==before_file && scene.Layers().size()==before_layers,
+              "invalid resources preserve current state");
+        const uint8_t pixel[4]={255,0,0,255};
+        Check(scene.SetPixels("video",pixel,1,1),"install unsupported pixel layer");
+        Check(!engine.SaveSnapshot("one.dat"),"unsupported scene cannot replace valid slot");
+        std::vector<uint8_t> after;
+        Check(artc::ReadSaveFile((slot_dir/"one.dat").string(),after) && after==valid,
+              "unsupported save preserves old slot bytes");
+        scene.DeleteLayer("video");
+        std::filesystem::remove_all(slot_dir);
     }
     Check(e3_private_pass,"Pass private nonloop fades exactly 20 frames once, without finishing globals or loops");
     std::cout << "audio channels and wait regressions passed\n";
