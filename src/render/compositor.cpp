@@ -2578,6 +2578,16 @@ bool CheckpointResource(PackManager* packs, const std::string& save_directory,
     return false;
 }
 
+bool CheckpointInteger(const std::string& value, int minimum, int maximum) {
+    if (!CheckpointNumber(value)) return false;
+    const double number = std::strtod(value.c_str(), nullptr);
+    return number == std::floor(number) && number >= minimum && number <= maximum;
+}
+
+bool CheckpointBool(const std::string& value) {
+    return value == "0" || value == "1";
+}
+
 bool CheckpointAttrs(const SavedCommand& command, std::string& error) {
     for (const auto& attr : command.attrs) {
         if ((attr.first == "left" || attr.first == "top" || attr.first == "w" ||
@@ -2585,7 +2595,11 @@ bool CheckpointAttrs(const SavedCommand& command, std::string& error) {
              attr.first == "alpha" || attr.first == "size" || attr.first == "color" ||
              attr.first == "xscale" || attr.first == "yscale" || attr.first == "zoom" ||
              attr.first == "rotate" || attr.first == "anchorx" || attr.first == "anchory" ||
-             attr.first == "z") && !CheckpointNumber(attr.second)) {
+             attr.first == "from" || attr.first == "to" || attr.first == "time" ||
+             attr.first == "delay" || attr.first == "ease" || attr.first == "repeat" ||
+             attr.first == "yoyo" || attr.first == "elapsed" || attr.first == "started" ||
+             attr.first == "from_current" || attr.first == "loop" || attr.first == "z") &&
+            !CheckpointNumber(attr.second)) {
             return CheckpointError(error, "invalid numeric scene attribute: " + attr.first);
         }
     }
@@ -2694,6 +2708,7 @@ bool Compositor::CaptureScene(std::vector<SavedCommand>& output, std::string& er
 
 bool Compositor::ValidateScene(const std::vector<SavedCommand>& scene, std::string& error) const {
     error.clear();
+    std::map<std::string, std::pair<bool, bool>> anime_states;
     for (const auto& command : scene) {
         if (!CheckpointAttrs(command, error)) return false;
         const auto id = command.attrs.find("id");
@@ -2726,9 +2741,59 @@ bool Compositor::ValidateScene(const std::vector<SavedCommand>& scene, std::stri
             if (command.attrs.count("type") == 0) {
                 return CheckpointError(error, "scene event has no type");
             }
+        } else if (command.name == "lytween") {
+            static constexpr const char* required[] = {
+                "param","from","to","time","delay","ease","repeat","yoyo",
+                "elapsed","started","from_current"
+            };
+            for (const char* key : required) if (!command.attrs.count(key)) {
+                return CheckpointError(error, "incomplete tween command");
+            }
+            Layer probe;
+            float current = 0;
+            if (!ReadParam(probe, command.attrs.at("param"), &current) ||
+                std::strtod(command.attrs.at("time").c_str(), nullptr) < 0 ||
+                std::strtod(command.attrs.at("delay").c_str(), nullptr) < 0 ||
+                !CheckpointInteger(command.attrs.at("ease"), 0, 30) ||
+                !CheckpointInteger(command.attrs.at("repeat"), -1, INT32_MAX) ||
+                !CheckpointBool(command.attrs.at("yoyo")) ||
+                !CheckpointBool(command.attrs.at("started")) ||
+                !CheckpointBool(command.attrs.at("from_current"))) {
+                return CheckpointError(error, "invalid tween command");
+            }
+        } else if (command.name == "anime") {
+            const auto mode = command.attrs.find("mode");
+            if (mode == command.attrs.end() ||
+                (mode->second != "init" && mode->second != "add" && mode->second != "end") ||
+                !command.attrs.count("time") ||
+                !CheckpointInteger(command.attrs.at("time"), 0, INT32_MAX)) {
+                return CheckpointError(error, "invalid anime command");
+            }
+            auto& state = anime_states[id->second];
+            if ((mode->second == "init" && state.first) ||
+                (mode->second == "add" && (!state.first || state.second)) ||
+                (mode->second == "end" && (!state.first || state.second))) {
+                return CheckpointError(error, "invalid anime sequence");
+            }
+            if (mode->second == "init") state.first = true;
+            if (mode->second == "end") {
+                state.second = true;
+                if (!command.attrs.count("loop") || !command.attrs.count("elapsed") ||
+                    !CheckpointInteger(command.attrs.at("loop"), -1, INT32_MAX)) {
+                    return CheckpointError(error, "invalid anime timing");
+                }
+            }
+            const auto file = command.attrs.find("file");
+            if (file != command.attrs.end() && !file->second.empty() &&
+                !CheckpointResource(packs_, save_directory_, file->second)) {
+                return CheckpointError(error, "anime frame is missing");
+            }
         } else if (command.name != "chgmsg") {
             return CheckpointError(error, "unsupported scene command: " + command.name);
         }
+    }
+    for (const auto& entry : anime_states) if (!entry.second.second) {
+        return CheckpointError(error, "anime sequence has no end");
     }
     return true;
 }
@@ -2765,6 +2830,37 @@ bool Compositor::RestoreScene(const std::vector<SavedCommand>& scene, std::strin
             }
         }
     }
+    for (const auto& command : scene) {
+        const auto& attrs = command.attrs;
+        const auto& id = attrs.at("id");
+        if (command.name == "lytween") {
+            Tween tw;
+            tw.id = id;
+            tw.param = attrs.at("param");
+            tw.from = std::stof(attrs.at("from"));
+            tw.to = std::stof(attrs.at("to"));
+            tw.time_ms = std::stod(attrs.at("time"));
+            tw.delay_ms = std::stod(attrs.at("delay"));
+            tw.ease = std::stoi(attrs.at("ease"));
+            tw.repeat = std::stoi(attrs.at("repeat"));
+            tw.yoyo = attrs.at("yoyo") == "1";
+            tw.start_ms = now_ms_ - std::stod(attrs.at("elapsed"));
+            tw.started = attrs.at("started") == "1";
+            tw.from_current = attrs.at("from_current") == "1";
+            tweens_.push_back(std::move(tw));
+        } else if (command.name == "anime") {
+            const auto file = attrs.find("file");
+            const std::string source = file == attrs.end() ? std::string() : file->second;
+            const auto& mode = attrs.at("mode");
+            if (mode == "end") anime_[id].loop = std::stoi(attrs.at("loop"));
+            const double start = mode == "end"
+                ? now_ms_ - std::stod(attrs.at("elapsed")) : now_ms_;
+            SetAnimeFrame(id, mode, source, std::stoi(attrs.at("time")),
+                          mode == "end" ? std::stoi(attrs.at("loop")) : 0,
+                          attrs, start);
+        }
+    }
+    AdvanceAnime(now_ms_, nullptr);
     InvalidateLayerIndex();
     ++revision_;
     return true;

@@ -1552,6 +1552,43 @@ int main() {
         scene.BeginTweenSet();
         Check(!scene.CaptureScene(commands,error),"uncommitted tween set is unsupported");
         scene.EndTweenSet(1250);
+        scene.DeleteLayer("bg");
+        scene.DeleteLayer("cursor");
+        Check(scene.RestoreScene(commands,error),"restore animated scene");
+        scene.Update(2100);
+        const auto& bg_restored=scene.Layers().at(0);
+        Check(bg_restored.x>59.9f && bg_restored.x<60.1f,
+              "infinite yoyo resumes at the original cycle endpoint");
+        scene.Update(1750);
+        const auto cursor_it=std::find_if(scene.Layers().begin(),scene.Layers().end(),
+                                          [](const auto& layer){return layer.id=="cursor";});
+        Check(cursor_it!=scene.Layers().end(),"restored cursor exists");
+        const auto& cursor=*cursor_it;
+        Check(cursor.source_file=="small.tga" && cursor.tex_w>0 &&
+              std::abs(cursor.u0-4.0f/cursor.tex_w)<0.0001f,
+              "looping anime advances from the restored phase");
+        auto before_animation=scene.Layers();
+        auto bad_animation=commands;
+        for(auto& command:bad_animation)
+            if(command.name=="lytween") command.attrs["elapsed"]="nan";
+        Check(!scene.RestoreScene(bad_animation,error),"non-finite tween phase rejected");
+        Check(scene.Layers().size()==before_animation.size(),"invalid animation preserves scene");
+        bad_animation=commands;
+        for(auto& command:bad_animation)
+            if(command.name=="anime" && command.attrs.at("mode")=="add")
+                command.attrs["file"]="missing.png";
+        Check(!scene.RestoreScene(bad_animation,error),"missing anime frame rejected before mutation");
+        Check(scene.Layers().size()==before_animation.size(),"missing anime frame preserves scene");
+        scene.SetAnimeFrame("finished","init","small.tga",0,1,{{"clip","0,0,4,4"}},2000);
+        scene.SetAnimeFrame("finished","add","small.tga",500,1,{{"clip","8,0,4,4"}},2000);
+        scene.SetAnimeFrame("finished","end","",500,1,{},2000);
+        scene.Update(2500);
+        Check(scene.CaptureScene(commands,error),"capture completed finite anime");
+        Check(scene.RestoreScene(commands,error),"restore completed finite anime");
+        const auto finished_it=std::find_if(scene.Layers().begin(),scene.Layers().end(),
+                                            [](const auto& layer){return layer.id=="finished";});
+        Check(finished_it!=scene.Layers().end() && finished_it->u0>0,
+              "completed finite anime holds its last frame");
         scene.DeleteTweens("bg");
         scene.Draw();
         Check(scene.BeginTransition(0,100,{},0,0,0),"start unsupported transition");
