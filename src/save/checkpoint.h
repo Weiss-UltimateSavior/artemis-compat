@@ -31,6 +31,7 @@ struct CheckpointFlow {
     std::string current_file;
     size_t pc = 0;
     bool loaded = false, halted = false, pc_pending = false;
+    CheckpointWait wait;
     std::vector<CheckpointFrame> frames;
     std::map<std::string, std::string> global_labels;
 };
@@ -59,8 +60,8 @@ inline bool operator==(const CheckpointFrame& a, const CheckpointFrame& b) {
 inline bool operator==(const CheckpointFlow& a, const CheckpointFlow& b) {
     return a.current_file == b.current_file && a.pc == b.pc &&
            a.loaded == b.loaded && a.halted == b.halted &&
-           a.pc_pending == b.pc_pending && a.frames == b.frames &&
-           a.global_labels == b.global_labels;
+           a.pc_pending == b.pc_pending && a.wait == b.wait &&
+           a.frames == b.frames && a.global_labels == b.global_labels;
 }
 
 bool EncodeCheckpointV2(const CheckpointV2&, std::vector<uint8_t>&, std::string&);
