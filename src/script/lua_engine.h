@@ -125,6 +125,14 @@ public:
     std::string QueuedTagName() const {
         return tag_queue_.empty() ? std::string() : tag_queue_.front().first;
     }
+    // Explicit files are context-independent; bare labels still need the
+    // host to preserve the parked caller before resolving them.
+    bool QueuedTagHasExplicitFile() const {
+        if (tag_queue_.empty()) return false;
+        for (const auto& attr : tag_queue_.front().second)
+            if (attr.first == "file" && !attr.second.empty()) return true;
+        return false;
+    }
     // Layer-event registration. The framework emits two kinds of lyevent
     // tags for the same (id, type): handler registrations (they name a
     // callback via function=/click=/over=/out=) and mode toggles from
