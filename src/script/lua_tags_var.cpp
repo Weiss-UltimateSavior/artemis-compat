@@ -7,8 +7,10 @@
 #include "script/lua_engine.h"
 #include "render/compositor.h"
 #include "log/logger.h"
+#include "util/save_storage.h"
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <cstdlib>
 #include <ctime>
 #include <string>
@@ -114,6 +116,12 @@ bool LuaEngine::TagVarRaw(lua_State *L) {
                 exists = low.compare(low.size() - 4, 4, ".exe") == 0;
             }
             if (!exists && packs_) exists = packs_->Exists(file);
+            const std::string save = field("save");
+            if (!exists && !save.empty() && save != "0") {
+                const auto path = SavePath(save_dir_, file);
+                std::error_code error;
+                exists = !path.empty() && std::filesystem::is_regular_file(path, error);
+            }
             vars_[name] = exists ? "1" : "0";
         } else if (S == "date") {
             // Save metadata reads six dotted calendar fields, not a Unix
