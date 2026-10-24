@@ -63,6 +63,7 @@ bool PutFlow(std::vector<uint8_t>& out, const CheckpointFlow& flow, std::string&
     if (!PutString(out, flow.current_file, error)) return false;
     Put64(out, flow.pc);
     for (bool flag : {flow.loaded, flow.halted, flow.pc_pending}) PutBool(out, flag);
+    if (!PutWait(out, flow.wait, error)) return false;
     Put32(out, static_cast<uint32_t>(flow.global_labels.size()));
     for (const auto& entry : flow.global_labels) {
         if (!PutString(out, entry.first, error) || !PutString(out, entry.second, error)) return false;
@@ -213,6 +214,7 @@ bool GetFlow(Reader& in, CheckpointFlow& flow) {
     for (bool *flag : {&flow.loaded, &flow.halted, &flow.pc_pending}) {
         if (!in.Bool(*flag)) return false;
     }
+    if (!GetWait(in, flow.wait)) return false;
     uint32_t count = 0;
     if (!in.Count(count)) return false;
     for (uint32_t i = 0; i < count; ++i) {

@@ -9,6 +9,7 @@
 // The engine executes the tag stack natively: calllua → Lua global, jump →
 // reposition, stop → halt; every other tag dispatches through the e bridge.
 #pragma once
+#include "save/checkpoint.h"
 #include "script/lua_engine.h"
 #include <cstdint>
 #include <map>
@@ -84,6 +85,10 @@ public:
     bool LoadBootAnchor(const std::string &file);
     // A load replaces the old scenario and any suspended menu/event frames.
     void DiscardFlow();
+    // ARCV v2 semantic flow capture. Validation has no runner/Lua side effects.
+    CheckpointFlow CaptureFlow() const;
+    bool ValidateFlow(const CheckpointFlow&, std::string&) const;
+    bool RestoreFlow(const CheckpointFlow&, std::string&);
     // External events may yield into native script commands. A handler with
     // no control transfer is completed synchronously by EndEvent.
     uint64_t BeginEvent(LuaEngine& lua);

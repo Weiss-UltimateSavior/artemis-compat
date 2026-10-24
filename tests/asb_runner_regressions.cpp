@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -165,6 +166,9 @@ int main() {
             // caller frame so the callee's [return] resumes here.
             {"post.iet",
              "*start\n[stepP0]\n[stepP1]\n[return]\n*sub2\n[stepS2]\n[return]\n"},
+            {"flow_main.iet",
+             "*start\n[stepFM0]\n[call file=\"flow_sub.iet\" label=\"sub\"]\n[stepFM2]\n[return]\n"},
+            {"flow_sub.iet", "*sub\n[stepFS1]\n[stepFS2]\n[return]\n"},
             // omitted-file jump targets a label in the current file (official
             // same-file jump semantics); stepDead must be skipped
             {"same.iet",
@@ -326,6 +330,58 @@ int main() {
         Check(trace.count("stepS2") == 1, "callee body ran");
         Check(runner.StackFiles().size() == 1,
               "callee return popped the caller frame instead of halting empty");
+    }
+
+    // ---- 5c) checkpoint flow capture and restore ---------------------------
+    {
+        Trace trace;
+        artc::SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (checkpoint flow)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        Check(runner.Jump("flow_main.iet", "start"), "load nested checkpoint flow");
+        for (int i = 0; i < 20 && !trace.has("stepFS1"); ++i) runner.ExecuteLine(lua);
+        lua.SetTimedWait(125);
+        const auto saved = runner.CaptureFlow();
+        Check(saved.current_file == "flow_sub.iet" && saved.frames.size() == 1,
+              "capture nested script position");
+        Check(saved.wait.timed && saved.wait.remaining_ms <= 125,
+              "capture current wait as remaining duration");
+        runner.DiscardFlow();
+        std::string error;
+        Check(runner.ValidateFlow(saved, error), error);
+        Check(runner.RestoreFlow(saved, error), error);
+        Check(runner.CurrentFile() == saved.current_file &&
+              runner.CurrentIndex() == saved.pc &&
+              runner.StackFiles().size() == saved.frames.size() + 1,
+              "restore exact nested position");
+        Check(runner.StackFiles().front() == "flow_main.iet" &&
+              runner.StackFiles().back() == "flow_sub.iet",
+              "restore caller before active script");
+        Check(lua.IsWaiting(), "restore current wait");
+        Run(runner, lua);
+        artc::SetLogSink(nullptr);
+        Check(trace.count("stepFM0") == 1 && trace.count("stepFS1") == 1 &&
+              trace.count("stepFS2") == 1 && trace.count("stepFM2") == 1,
+              "restored flow continues once through caller and callee");
+
+        const auto before = runner.StackFiles();
+        auto invalid = saved;
+        invalid.current_file = "missing.iet";
+        Check(!runner.ValidateFlow(invalid, error), "missing flow script rejected");
+        Check(!runner.RestoreFlow(invalid, error), "missing flow not restored");
+        invalid = saved;
+        invalid.pc = std::numeric_limits<size_t>::max();
+        Check(!runner.ValidateFlow(invalid, error), "invalid current PC rejected");
+        invalid = saved;
+        invalid.frames[0].pc = std::numeric_limits<size_t>::max();
+        Check(!runner.ValidateFlow(invalid, error), "invalid frame PC rejected");
+        invalid = saved;
+        invalid.wait.remaining_ms = std::numeric_limits<uint64_t>::max();
+        Check(!runner.ValidateFlow(invalid, error), "invalid remaining wait rejected");
+        Check(runner.StackFiles() == before, "invalid flow never changes runner stack");
     }
 
     // ---- 6) omitted-file jump: in-file then cross-file label resolution ----
