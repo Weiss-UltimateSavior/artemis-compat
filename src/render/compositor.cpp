@@ -2612,9 +2612,6 @@ bool Compositor::CaptureScene(std::vector<SavedCommand>& output, std::string& er
     if (collecting_tweens_) {
         return CheckpointError(error, "uncommitted tween set is unsupported");
     }
-    if (trans_active_) {
-        return CheckpointError(error, "active scene transition is unsupported");
-    }
     std::vector<SavedCommand> next;
     for (const auto& layer : layers_) {
         if (!layer.mesh.empty() || layer.effect.stage_mask != 0 ||
