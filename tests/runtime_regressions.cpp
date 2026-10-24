@@ -262,6 +262,9 @@ int main(int argc, char** argv) {
         e:tag{"save",file="one.dat"};e:tag{"save",file="two.dat"}
         assert(e:isFileExists(e:var('s.savepath')..'/one.dat'))
         assert(e:isFileExists(e:var('s.savepath')..'/two.dat'))
+        e:tag{'var',name='t.quick_exists',system='file_exist',file='one.dat',save='1'}
+        e:tag{'var',name='t.missing_exists',system='file_exist',file='missing.dat',save='1'}
+        assert(e:var('t.quick_exists')=='1' and e:var('t.missing_exists')=='0')
     )","checkpoint slots"),"save honors distinct slot filenames and onSave preparation");
     Check(slot_engine.LoadSnapshot("one.dat") && slot_engine.LoadSnapshot("two.dat"),"each checkpoint reloads its own graph");
     Check(!slot_engine.SaveSnapshot("system.dat") && !slot_engine.SaveSnapshot("saveg.dat"),"scenario saves cannot overwrite global banks");
