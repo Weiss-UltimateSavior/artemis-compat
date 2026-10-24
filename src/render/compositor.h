@@ -11,6 +11,7 @@
 #pragma once
 #include "render/glyph_atlas.h"
 #include "render/layer_shader.h"
+#include "save/native_save.h"
 #include "util/snapshot_image.h"
 #include "util/text.h"
 #include <functional>
@@ -76,6 +77,13 @@ struct Layer {
     // pixels); when non-empty the layer is drawn as triangles instead of a quad
     // (E-mote per-icon mesh warp).
     std::vector<float> mesh;
+    // Semantic sources retained for ARCV v2 reconstruction (never GL handles).
+    std::string source_file;
+    float text_size = 0;
+    uint32_t text_color = 0;
+    float text_wrap_width = 0;
+    std::map<std::string, std::string> text_style;
+    std::vector<TextRuby> text_ruby;
 };
 
 class Compositor {
@@ -98,6 +106,10 @@ public:
     bool SetPixels(const std::string& id, const uint8_t* rgba, int width, int height);
     // Capture the retained stage without redrawing the save/menu overlays.
     bool Snapshot(SnapshotImage& output) const;
+    // ARCV v2 semantic scene capture; validation never mutates the compositor.
+    bool CaptureScene(std::vector<SavedCommand>&, std::string&) const;
+    bool ValidateScene(const std::vector<SavedCommand>&, std::string&) const;
+    bool RestoreScene(const std::vector<SavedCommand>&, std::string&);
     void SetProps(const std::string &id, const std::map<std::string, std::string> &attrs);
     void DeleteLayer(const std::string &id);
     // E-mote stencil composite: render the named layers' alpha into the

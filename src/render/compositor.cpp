@@ -1360,6 +1360,7 @@ bool Compositor::LoadImage(const std::string &id, const std::string &file) {
             l.tex_w = w; l.tex_h = h;
             l.content_x = l.content_y = 0;
             l.glyphs.clear(); l.text.clear();
+            l.source_file = file;
             // A replacement is a new image surface. Face differences often
             // have different bounding boxes; retaining the previous surface's
             // size stretches the new eyes/mouth away from their scripted origin.
@@ -1373,6 +1374,7 @@ bool Compositor::LoadImage(const std::string &id, const std::string &file) {
     }
     Layer l;
     l.id = id;
+    l.source_file = file;
     l.texture = tex;
     l.tex_w = w; l.tex_h = h;
     l.w = (float)w; l.h = (float)h;
@@ -1438,6 +1440,7 @@ bool Compositor::SetPixels(const std::string& id, const uint8_t* rgba, int width
             l.texture=CreateTexture(rgba,width,height);
         }
         l.tex_w=width; l.tex_h=height;
+        l.source_file.clear();
         l.glyphs.clear(); l.text.clear(); l.content_x=l.content_y=0;
         l.u0=l.v0=0; l.u1=l.v1=1;
         return l.texture!=0;
@@ -1453,6 +1456,8 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     if (text.empty()) {
         for (auto& l : layers_) if (l.id == id) {
             l.glyphs.clear(); l.text.clear();
+            l.text_size = 0; l.text_color = 0; l.text_wrap_width = 0;
+            l.text_style.clear(); l.text_ruby.clear();
             l.text_pen_x = l.text_pen_y = 0;
             if (l.texture) glDeleteTextures(1, &l.texture);
             l.texture = 0;
@@ -1462,6 +1467,13 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
         return true;
     }
     if (!font_ready_) return false;
+    const auto save_style = [&](Layer& layer) {
+        layer.text_size = size;
+        layer.text_color = color;
+        layer.text_wrap_width = wrapWidth;
+        layer.text_style = style;
+        layer.text_ruby = ruby;
+    };
     auto *info = static_cast<stbtt_fontinfo *>(font_info_);
     const auto number = [&](const char* name, float fallback) {
         const auto it = style.find(name);
@@ -1711,6 +1723,7 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
             l.content_y = number("top", 0);
             l.text_pen_x = pen_x;
             l.text_pen_y = pen_y;
+            save_style(l);
             Log(kLogInfo, "SetText: replaced " + id + " " +
                               std::to_string(tex_w) + "x" + std::to_string(tex_h) +
                               " (glyphs " + std::to_string(l.glyphs.size()) + ")");
@@ -1727,6 +1740,7 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     l.content_y = number("top", 0);
     l.text_pen_x = pen_x;
     l.text_pen_y = pen_y;
+    save_style(l);
     l.z = 100; // above scene layers
     InvalidateLayerIndex();
     layers_.push_back(l);
@@ -2310,6 +2324,7 @@ bool Compositor::SetPixels(const std::string& id, const uint8_t* rgba, int width
         if(!l.texture || l.w==l.tex_w) l.w=width;
         if(!l.texture || l.h==l.tex_h) l.h=height;
         l.texture=kHostTexture; l.tex_w=width; l.tex_h=height;
+        l.source_file.clear();
         l.glyphs.clear(); l.text.clear(); return true;
     }
     return false;
@@ -2339,6 +2354,7 @@ bool Compositor::LoadImage(const std::string &id, const std::string &file) {
     stbi_image_free(pixels);
     for (auto &l : layers_) {
         if (l.id == id) {
+            l.source_file = file;
             l.texture = kHostTexture;
             l.tex_w = w; l.tex_h = h;
             l.content_x = l.content_y = 0;
@@ -2349,6 +2365,7 @@ bool Compositor::LoadImage(const std::string &id, const std::string &file) {
     }
     Layer l;
     l.id = id;
+    l.source_file = file;
     l.texture = kHostTexture;
     l.tex_w = w; l.tex_h = h;
     l.w = (float)w; l.h = (float)h;
@@ -2441,6 +2458,14 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
                          const std::vector<TextRuby>& ruby) {
     ++revision_;
     if (text.empty()) return false;
+    const auto save_style = [&](Layer& layer) {
+        layer.text = text;
+        layer.text_size = size;
+        layer.text_color = color;
+        layer.text_wrap_width = wrapWidth;
+        layer.text_style = style;
+        layer.text_ruby = ruby;
+    };
     (void)color;   // host mock ignores the baked-in color (no rasterization)
     (void)wrapWidth;
     // fake-texture message layer: width ~ proportional to glyph count
@@ -2452,6 +2477,7 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
             l.tex_w = tw; l.tex_h = th;
             l.w = (float)tw; l.h = (float)th;
             l.text_pen_x = (float)tw; l.text_pen_y = 0;
+            save_style(l);
             Log(kLogInfo, "SetText: replaced " + id + " " + std::to_string(tw) + "x" +
                               std::to_string(th) + " '" + text.substr(0, 24) + "'");
             return true;
@@ -2463,6 +2489,7 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     l.tex_w = tw; l.tex_h = th;
     l.w = (float)tw; l.h = (float)th;
     l.text_pen_x = (float)tw; l.text_pen_y = 0;
+    save_style(l);
     l.x = 40.0f;
     l.y = (float)stage_h_ - (float)th - 60.0f;
     l.z = 100;
@@ -2518,5 +2545,196 @@ void Compositor::Init(int stage_w, int stage_h) {
 }
 
 #endif
+
+namespace {
+bool CheckpointError(std::string& error, const std::string& message) {
+    error = message;
+    return false;
+}
+
+std::string CheckpointFloat(float value) {
+    return std::to_string(value);
+}
+
+bool CheckpointNumber(const std::string& value) {
+    if (value.empty()) return false;
+    char *end = nullptr;
+    const double number = std::strtod(value.c_str(), &end);
+    return end == value.c_str() + value.size() && std::isfinite(number);
+}
+
+bool CheckpointResource(PackManager* packs, const std::string& save_directory,
+                        const std::string& file) {
+    if (file.empty() || !packs) return false;
+    for (const char* ext : {"", ".png", ".jpg", ".jpeg"}) {
+        const std::string candidate = file + ext;
+        std::vector<uint8_t> bytes;
+        if (packs->Read(candidate, bytes) || ReadSaveFile(SavePath(save_directory, candidate), bytes)) {
+            return !bytes.empty();
+        }
+    }
+    return false;
+}
+
+bool CheckpointAttrs(const SavedCommand& command, std::string& error) {
+    for (const auto& attr : command.attrs) {
+        if ((attr.first == "left" || attr.first == "top" || attr.first == "w" ||
+             attr.first == "h" || attr.first == "width" || attr.first == "height" ||
+             attr.first == "alpha" || attr.first == "size" || attr.first == "color" ||
+             attr.first == "xscale" || attr.first == "yscale" || attr.first == "zoom" ||
+             attr.first == "rotate" || attr.first == "anchorx" || attr.first == "anchory" ||
+             attr.first == "z") && !CheckpointNumber(attr.second)) {
+            return CheckpointError(error, "invalid numeric scene attribute: " + attr.first);
+        }
+    }
+    return true;
+}
+} // namespace
+
+bool Compositor::CaptureScene(std::vector<SavedCommand>& output, std::string& error) const {
+    error.clear();
+    if (!tweens_.empty() || !anime_.empty() || trans_active_) {
+        return CheckpointError(error, "active scene animation is unsupported");
+    }
+    std::vector<SavedCommand> next;
+    for (const auto& layer : layers_) {
+        if (!layer.mesh.empty() || layer.effect.stage_mask != 0 ||
+            layer.effect.emote_tree || !layer.effect.emote_owner.empty()) {
+            return CheckpointError(error, "mesh or E-mote scene state is unsupported");
+        }
+        if (layer.texture && layer.source_file.empty() && layer.text.empty()) {
+            return CheckpointError(error, "pixel-only scene layer is unsupported");
+        }
+        if (!layer.source_file.empty()) {
+            next.push_back({"lyc", {{"id", layer.id}, {"file", layer.source_file}}});
+        }
+
+        SavedCommand props{"lyprop", layer.effect.parameters};
+        auto& attrs = props.attrs;
+        attrs["id"] = layer.id;
+        attrs["left"] = CheckpointFloat(layer.x);
+        attrs["top"] = CheckpointFloat(layer.y);
+        attrs["w"] = CheckpointFloat(layer.w);
+        attrs["h"] = CheckpointFloat(layer.h);
+        attrs["alpha"] = std::to_string(static_cast<int>(std::lround(layer.alpha * 255)));
+        attrs["visible"] = layer.visible ? "1" : "0";
+        attrs["z"] = std::to_string(layer.z);
+        attrs["anchorx"] = CheckpointFloat(layer.ax);
+        attrs["anchory"] = CheckpointFloat(layer.ay);
+        attrs["xscale"] = CheckpointFloat(layer.sx * 100);
+        attrs["yscale"] = CheckpointFloat(layer.sy * 100);
+        attrs["rotate"] = CheckpointFloat(layer.rotate);
+        attrs["reversex"] = layer.reverse_x ? "1" : "0";
+        attrs["reversey"] = layer.reverse_y ? "1" : "0";
+        if (layer.affine) {
+            return CheckpointError(error, "custom affine scene state is unsupported");
+        }
+        if (layer.draggable) attrs["draggable"] = "1";
+        if (layer.has_dragarea) {
+            attrs["dragarea"] = CheckpointFloat(layer.drag_l) + "," + CheckpointFloat(layer.drag_t) +
+                                "," + CheckpointFloat(layer.drag_r) + "," + CheckpointFloat(layer.drag_b);
+        }
+        if (layer.tex_w > 0 && layer.tex_h > 0 &&
+            (layer.u0 != 0 || layer.v0 != 0 || layer.u1 != 1 || layer.v1 != 1)) {
+            attrs["clip"] = std::to_string(static_cast<int>(std::lround(layer.u0 * layer.tex_w))) + "," +
+                            std::to_string(static_cast<int>(std::lround(layer.v0 * layer.tex_h))) + "," +
+                            std::to_string(static_cast<int>(std::lround((layer.u1-layer.u0) * layer.tex_w))) + "," +
+                            std::to_string(static_cast<int>(std::lround((layer.v1-layer.v0) * layer.tex_h)));
+        }
+        next.push_back(std::move(props));
+        if (layer.message_overlay) next.push_back({"chgmsg", {{"id", layer.id}, {"layered", "0"}}});
+        if (!layer.text.empty()) {
+            if (font_path_.empty()) return CheckpointError(error, "text layer has no font source");
+            SavedCommand font{"font", layer.text_style};
+            font.attrs["id"] = layer.id;
+            font.attrs["face"] = font_path_;
+            font.attrs["size"] = CheckpointFloat(layer.text_size);
+            font.attrs["color"] = std::to_string(layer.text_color);
+            next.push_back(std::move(font));
+            next.push_back({"print", {{"id", layer.id}, {"data", layer.text},
+                                      {"width", CheckpointFloat(layer.text_wrap_width)}}});
+        }
+    }
+    output = std::move(next);
+    return true;
+}
+
+bool Compositor::ValidateScene(const std::vector<SavedCommand>& scene, std::string& error) const {
+    error.clear();
+    for (const auto& command : scene) {
+        if (!CheckpointAttrs(command, error)) return false;
+        const auto id = command.attrs.find("id");
+        if (command.name != "font" && (id == command.attrs.end() || id->second.empty())) {
+            return CheckpointError(error, "scene command has no layer id");
+        }
+        if (command.name == "lyc") {
+            const auto file = command.attrs.find("file");
+            if (file == command.attrs.end() ||
+                !CheckpointResource(packs_, save_directory_, file->second)) {
+                return CheckpointError(error, "scene image is missing");
+            }
+        } else if (command.name == "font") {
+            const auto face = command.attrs.find("face");
+            if (face == command.attrs.end() || command.attrs.count("size") == 0 ||
+                !CheckpointResource(packs_, save_directory_, face->second)) {
+                return CheckpointError(error, "scene font is missing");
+            }
+        } else if (command.name == "print") {
+            if (command.attrs.count("data") == 0) {
+                return CheckpointError(error, "invalid scene text command");
+            }
+        } else if (command.name == "lyprop") {
+            const auto mask = command.attrs.find("intermediate_render_mask");
+            if (mask != command.attrs.end() && !mask->second.empty() &&
+                !CheckpointResource(packs_, save_directory_, mask->second)) {
+                return CheckpointError(error, "scene mask is missing");
+            }
+        } else if (command.name == "lyevent") {
+            if (command.attrs.count("type") == 0) {
+                return CheckpointError(error, "scene event has no type");
+            }
+        } else if (command.name != "chgmsg") {
+            return CheckpointError(error, "unsupported scene command: " + command.name);
+        }
+    }
+    return true;
+}
+
+bool Compositor::RestoreScene(const std::vector<SavedCommand>& scene, std::string& error) {
+    if (!ValidateScene(scene, error)) return false;
+    const int width = stage_w_, height = stage_h_;
+    ReleaseGl();
+    Init(width, height);
+    std::map<std::string, std::string> text_style;
+    for (const auto& command : scene) {
+        const std::string& id = command.attrs.at("id");
+        if (command.name == "lyc") {
+            if (!LoadImage(id, command.attrs.at("file"))) {
+                return CheckpointError(error, "failed to restore scene image");
+            }
+        } else if (command.name == "lyprop") {
+            SetProps(id, command.attrs);
+        } else if (command.name == "chgmsg") {
+            SetMessageLayered(id, command.attrs.at("layered") != "0");
+        } else if (command.name == "font") {
+#if defined(ARTC_HAS_GLES)
+            if (!LoadFont(command.attrs.at("face"))) {
+                return CheckpointError(error, "failed to restore scene font");
+            }
+#endif
+            text_style = command.attrs;
+        } else if (command.name == "print") {
+            const float size = std::stof(text_style.at("size"));
+            const uint32_t color = static_cast<uint32_t>(std::stoul(text_style.at("color")));
+            const float wrap = std::stof(command.attrs.at("width"));
+            if (!SetText(id, command.attrs.at("data"), size, color, wrap, text_style)) {
+                return CheckpointError(error, "failed to restore scene text");
+            }
+        }
+    }
+    InvalidateLayerIndex();
+    ++revision_;
+    return true;
+}
 
 } // namespace artc
