@@ -676,6 +676,24 @@ int main(int argc, char** argv) {
     Check(events.DoString("assert(overs==1 and qcalls==5)", "touch click"),
           "a touch click without hover still supplies its pressed rollover");
 
+    // A different click target must not leak the previous target's cursor
+    // into button2_rollover. Both framework cursor spellings are cleared
+    // before the pressed rollover runs, preventing stale button definitions.
+    add_hit_layer("500.5", "750");
+    Check(events.DoString(R"(
+        function button_over(e,p)
+            assert(btn_cursor ~= 'stale' and (not btn or btn.cursor ~= 'stale'),
+                   'stale cursor reached rollover')
+            overs=overs+1
+        end
+        e:tag{'lyevent', id='500.5', type='click', handler='calllua',
+              ['function']='button_q', key='1', over='button_over'}
+        overs=0; btn_cursor='stale'; btn={cursor='stale'}
+    )", "stale cursor setup"), "register a different click target");
+    events.ClickAt(760,50); events.RunEnterFrame();
+    Check(events.DoString("assert(overs==1)", "different target click"),
+          "pressed rollover starts without the previous button cursor");
+
     // Drag chain: a draggable layer's drag handler fires on move and its
     // dragout handler fires on release — the save/load screen's thumbnail
     // drag (save_thumb_drag/dragout) relies on dragout to re-enable the

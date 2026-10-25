@@ -1615,9 +1615,15 @@ void LuaEngine::DispatchClick(float x, float y) {
     // already delivered it for a hovered button; do not deactivate/reactivate
     // the same framework button a second time before its click handler runs.
     if (id != hover_id_)
-        for (const auto &kv : attrs)     // over (pressed phase)
-            if (kv.first == "over" && !kv.second.empty())
-                CallEvent(kv.second, attrs, false);
+        for (const auto &kv : attrs) {   // over (pressed phase)
+            if (kv.first != "over" || kv.second.empty()) continue;
+            // The new target may belong to another button group. Clear both
+            // cursor spellings before its rollover, so stale definitions are
+            // never evaluated by button2_rollover/btn_nonactive.
+            DoString("if btn then btn.cursor=nil end; btn_cursor=nil",
+                     "clear-stale-button-cursor");
+            CallEvent(kv.second, attrs, false);
+        }
     // Button dispatch follows the original kernel's two-step model:
     //   * if the ACTIVE button def carries `exec`, run it directly (covers
     //     title / language / save-slot buttons — the lyevent click attr);
