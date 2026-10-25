@@ -126,6 +126,20 @@ void TestKeyConsumption() {
     CHECK(!EngineConsumesKeyId(-1), "unmapped key (incl. volume) is left to the system");
 }
 
+void TestPackSelection() {
+    std::vector<std::string> packs{
+        "/game/chs_patch_baijingmu.pfs",
+        "/game/chs_patch_official.pfs",
+        "/game/root.pfs",
+        "/game/aaa.pfs",
+    };
+    artc::jni::SortPackPaths(packs);
+    CHECK(packs[0] == "/game/root.pfs", "root pack is always the chain base");
+    CHECK(packs[1] == "/game/aaa.pfs" && packs[2] == "/game/chs_patch_baijingmu.pfs" &&
+              packs[3] == "/game/chs_patch_official.pfs",
+          "other packs use deterministic alphabetical order");
+}
+
 } // namespace
 
 int main() {
@@ -133,6 +147,7 @@ int main() {
     TestPoll();
     TestFrameSleep();
     TestKeyConsumption();
+    TestPackSelection();
     if (g_failures) return 1;
     std::cout << "android jni util regressions passed\n";
     return 0;

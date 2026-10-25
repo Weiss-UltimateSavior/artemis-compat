@@ -246,6 +246,7 @@ std::vector<std::string> ListPacks(const char *dir) {
             found.push_back(std::string(dir) + "/" + name);
     }
     closedir(d);
+    artc::jni::SortPackPaths(found);
     return found;
 }
 
