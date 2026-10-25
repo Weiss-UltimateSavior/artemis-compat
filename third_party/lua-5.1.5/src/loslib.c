@@ -48,15 +48,8 @@ static int os_pushresult (lua_State *L, int i, const char *filename) {
 
 
 static int os_execute (lua_State *L) {
-#if defined(LUA_USE_NO_SYSTEM)
-  (void)L;
-  lua_pushnil(L);
-  lua_pushliteral(L, "process execution is unavailable on this platform");
-  return 2;
-#else
   lua_pushinteger(L, system(luaL_optstring(L, 1, NULL)));
   return 1;
-#endif
 }
 
 
