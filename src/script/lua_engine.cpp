@@ -1610,10 +1610,14 @@ void LuaEngine::DispatchClick(float x, float y) {
     // Button events run above the scenario, which keeps its cursor and wait.
     // A plain click outside an event releases the wait in the branch above.
     const uint64_t event = script_runner_ ? script_runner_->BeginEvent(*this) : 0;
-    // touch model: rollover sets btn.cursor first, then the click fires.
-    for (const auto &kv : attrs)     // over (pressed phase)
-        if (kv.first == "over" && !kv.second.empty())
-            CallEvent(kv.second, attrs, false);
+    // Touch model: a click without an active hover supplies the pressed
+    // rollover so the framework can establish its button cursor. HoverMove
+    // already delivered it for a hovered button; do not deactivate/reactivate
+    // the same framework button a second time before its click handler runs.
+    if (id != hover_id_)
+        for (const auto &kv : attrs)     // over (pressed phase)
+            if (kv.first == "over" && !kv.second.empty())
+                CallEvent(kv.second, attrs, false);
     // Button dispatch follows the original kernel's two-step model:
     //   * if the ACTIVE button def carries `exec`, run it directly (covers
     //     title / language / save-slot buttons — the lyevent click attr);

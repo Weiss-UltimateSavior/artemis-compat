@@ -653,6 +653,29 @@ int main(int argc, char** argv) {
     Check(events.DoString("assert(qcalls==3 and pushes==1)", "cursor-sync click"),
           "cursor-sync handler still drives the CLICK key exactly once");
 
+    // A hovered button's click reuses the rollover already delivered by
+    // HoverMove. Repeating the callback can deactivate a stale button twice in
+    // framework button groups and turn a YES confirmation into cancellation.
+    Check(events.DoString(R"(
+        overs=0
+        function button_over(e,p) overs=overs+1 end
+        e:tag{'lyevent', id='500.4', type='click', handler='calllua',
+              ['function']='button_q', key='1', over='button_over'}
+        e:tag{'lyevent', id='500.4', type='rollover', handler='calllua',
+              ['function']='button_over'}
+    )", "hover click setup"), "register button rollover");
+    events.SetMousePoint(650,50);
+    Check(events.DoString("assert(overs==1)", "initial hover"),
+          "hover delivers rollover once before the click");
+    events.ClickAt(650,50); events.RunEnterFrame();
+    Check(events.DoString("assert(overs==1 and qcalls==4)", "hovered click"),
+          "click does not repeat rollover for the already hovered button");
+    events.SetMousePoint(50,50);
+    Check(events.DoString("overs=0", "reset touch rollover"), "reset rollover count");
+    events.ClickAt(650,50); events.RunEnterFrame();
+    Check(events.DoString("assert(overs==1 and qcalls==5)", "touch click"),
+          "a touch click without hover still supplies its pressed rollover");
+
     // Drag chain: a draggable layer's drag handler fires on move and its
     // dragout handler fires on release — the save/load screen's thumbnail
     // drag (save_thumb_drag/dragout) relies on dragout to re-enable the
