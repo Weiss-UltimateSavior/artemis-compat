@@ -382,7 +382,7 @@ private:
     int tag_filter_ref_ = -2;   // LUA_NOREF
     static int l_overrideKey(lua_State *L);
     void DispatchFrameInput();
-    void DispatchClick(float x, float y);
+    void DispatchClick(float x, float y, bool allow_fallback);
     void AdvanceByInput();
     void SetAutoMode(bool enabled);
     void FireNamedEvent(const std::string &key);

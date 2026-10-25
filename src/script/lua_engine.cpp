@@ -1529,10 +1529,14 @@ void LuaEngine::AdvanceByInput() {
 }
 
 void LuaEngine::DispatchFrameInput() {
-    const bool click=pending_click_ ||
+    // A queued pointer tap is already a completed physical action. Layer hit
+    // testing remains valid even when the script masks Decide to suppress the
+    // separate CLICK key role (save/load screens use this while editing slots).
+    const bool direct_click=pending_click_;
+    const bool click=direct_click ||
         (input_.Overridden(1) && input_.Query(1,InputState::Decide));
-    const float x=pending_click_ ? click_x_ : mouse_x_;
-    const float y=pending_click_ ? click_y_ : mouse_y_;
+    const float x=direct_click ? click_x_ : mouse_x_;
+    const float y=direct_click ? click_y_ : mouse_y_;
     pending_click_=false;
     if(!video_wait_.empty()) {
         const bool movie_click=click && (!input_.Overridden(1) || input_.Query(1,InputState::Decide));
@@ -1548,8 +1552,9 @@ void LuaEngine::DispatchFrameInput() {
         if(cancel) videos_.erase(video_wait_);
         return;
     }
-    if (click && (!input_.Overridden(1) || input_.Query(1,InputState::Decide)))
-        DispatchClick(x,y);
+    if (click && (direct_click || !input_.Overridden(1) || input_.Query(1,InputState::Decide)))
+        DispatchClick(x, y, !direct_click || !input_.Overridden(1) ||
+                              input_.Query(1, InputState::Decide));
     // Key callbacks can alter their registrations, enqueue scripts, or emit
     // another virtual key. Iterate key ids, then evaluate the click role once.
     for (int key=2;key<InputState::Count;++key) {
@@ -1568,8 +1573,9 @@ void LuaEngine::DispatchFrameInput() {
     } else if(input_.Query(13,InputState::Decide)) AdvanceByInput();
 }
 
-void LuaEngine::DispatchClick(float x, float y) {
+void LuaEngine::DispatchClick(float x, float y, bool allow_fallback) {
     if (!compositor_) {
+        if (!allow_fallback) return;
         if (onpush_.count(1)) FireOnPush(1);
         else AdvanceByInput();
         return;
@@ -1602,6 +1608,7 @@ void LuaEngine::DispatchClick(float x, float y) {
         // UI (e.g. the volume slider's mwmute branch) when `func` is nil, and
         // a stale cursor otherwise keeps the click bound to the last button.
         DoString("if btn then btn.cursor=nil end", "clear-btn-cursor");
+        if (!allow_fallback) return;
         if (onpush_.count(1)) { Log(kLogInfo, "click: fallback -> onpush key 1"); FireOnPush(1); }
         else { Log(kLogInfo, "click: fallback -> advance"); AdvanceByInput(); }
         return;
@@ -1671,7 +1678,7 @@ void LuaEngine::DispatchClick(float x, float y) {
         for (const auto &kv : attrs)     // cursor-sync (function = btn_clickex)
             if (kv.first == "function" && !kv.second.empty())
                 CallEvent(kv.second, attrs, true);
-        if (!self_contained) FireOnPush(1);  // CLICK key → setonpush_calllua
+        if (!self_contained && allow_fallback) FireOnPush(1);  // CLICK key → setonpush_calllua
     }
     if (script_runner_) script_runner_->EndEvent(event);
 }

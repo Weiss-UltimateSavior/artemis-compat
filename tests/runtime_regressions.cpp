@@ -653,6 +653,17 @@ int main(int argc, char** argv) {
     Check(events.DoString("assert(qcalls==3 and pushes==1)", "cursor-sync click"),
           "cursor-sync handler still drives the CLICK key exactly once");
 
+    Check(events.DoString(R"(
+        masked=0
+        function masked_button(e,p) masked=masked+1 end
+        e:tag{'lyevent', id='500.3', type='click', handler='calllua',
+              ['function']='masked_button', lua='adv_save'}
+        e:overrideKey{key=1,status=0}
+    )", "masked direct click setup"), "mask Decide while leaving a layer button active");
+    events.ClickAt(500,50); events.RunEnterFrame();
+    Check(events.DoString("assert(masked==1 and pushes==1)", "masked direct click"),
+          "a completed pointer click still reaches its layer button when Decide is masked");
+
     // A hovered button's click reuses the rollover already delivered by
     // HoverMove. Repeating the callback can deactivate a stale button twice in
     // framework button groups and turn a YES confirmation into cancellation.
