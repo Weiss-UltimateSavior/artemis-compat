@@ -29,6 +29,18 @@ add_executable(runtime_regressions runtime_regressions.cpp)
 target_link_libraries(runtime_regressions PRIVATE artemis_core)
 add_test(NAME runtime_regressions COMMAND runtime_regressions)
 
+# Platforms without process execution must report it through the Lua API rather
+# than fail to compile or pretend that a command ran. Build a separate Lua copy
+# so the production/default Lua behavior remains unchanged on other platforms.
+add_library(lua51_no_system STATIC ${LUA_SOURCES})
+set_target_properties(lua51_no_system PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(lua51_no_system PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lua-5.1.5/src)
+target_compile_definitions(lua51_no_system PRIVATE LUA_USE_POSIX LUA_USE_NO_SYSTEM)
+add_executable(lua_no_system_regressions lua_no_system_regressions.cpp)
+target_link_libraries(lua_no_system_regressions PRIVATE lua51_no_system)
+add_test(NAME lua_no_system_regressions COMMAND lua_no_system_regressions)
+
 add_executable(compositor_index_regressions compositor_index_regressions.cpp)
 target_link_libraries(compositor_index_regressions PRIVATE artemis_core)
 add_test(NAME compositor_index_regressions COMMAND compositor_index_regressions)

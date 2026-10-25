@@ -32,6 +32,11 @@ target_include_directories(lua51 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/
 if(UNIX)
     target_compile_definitions(lua51 PRIVATE LUA_USE_POSIX)
 endif()
+if(IOS)
+    # iOS forbids spawning processes; return an API error instead of failing
+    # compilation on the unavailable system() declaration.
+    target_compile_definitions(lua51 PRIVATE LUA_USE_NO_SYSTEM)
+endif()
 # NDK r28 defaults to _FORTIFY_SOURCE=3, which false-positives inside Lua 5.1's
 # GC sweep (strchr FORTIFY abort in luaC_step during luaL_openlibs). Lua 5.1
 # predates FORTIFY hardening; disable it for this vendored build on Android.
