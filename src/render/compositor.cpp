@@ -2588,6 +2588,21 @@ bool CheckpointBool(const std::string& value) {
     return value == "0" || value == "1";
 }
 
+bool CheckpointFloat32(const std::string& value) {
+    if (!CheckpointNumber(value)) return false;
+    try {
+        return std::isfinite(std::stof(value));
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool CheckpointUint32(const std::string& value) {
+    if (!CheckpointNumber(value)) return false;
+    const double number = std::strtod(value.c_str(), nullptr);
+    return number >= 0 && number <= UINT32_MAX && std::floor(number) == number;
+}
+
 bool CheckpointAttrs(const SavedCommand& command, std::string& error) {
     for (const auto& attr : command.attrs) {
         if ((attr.first == "left" || attr.first == "top" || attr.first == "w" ||
@@ -2601,6 +2616,17 @@ bool CheckpointAttrs(const SavedCommand& command, std::string& error) {
              attr.first == "from_current" || attr.first == "loop" || attr.first == "z") &&
             !CheckpointNumber(attr.second)) {
             return CheckpointError(error, "invalid numeric scene attribute: " + attr.first);
+        }
+        if ((attr.first == "left" || attr.first == "top" || attr.first == "w" ||
+             attr.first == "h" || attr.first == "width" || attr.first == "height" ||
+             attr.first == "size" || attr.first == "xscale" || attr.first == "yscale" ||
+             attr.first == "rotate" || attr.first == "anchorx" || attr.first == "anchory" ||
+             attr.first == "from" || attr.first == "to") &&
+            !CheckpointFloat32(attr.second)) {
+            return CheckpointError(error, "scene float is out of range: " + attr.first);
+        }
+        if (attr.first == "color" && !CheckpointUint32(attr.second)) {
+            return CheckpointError(error, "scene color is out of range");
         }
     }
     return true;
@@ -2828,7 +2854,7 @@ bool Compositor::RestoreScene(const std::vector<SavedCommand>& scene, std::strin
             text_style = command.attrs;
         } else if (command.name == "print") {
             const float size = std::stof(text_style.at("size"));
-            const uint32_t color = static_cast<uint32_t>(std::stoul(text_style.at("color")));
+            const uint32_t color = static_cast<uint32_t>(std::stod(text_style.at("color")));
             const float wrap = std::stof(command.attrs.at("width"));
             if (!SetText(id, command.attrs.at("data"), size, color, wrap, text_style)) {
                 return CheckpointError(error, "failed to restore scene text");

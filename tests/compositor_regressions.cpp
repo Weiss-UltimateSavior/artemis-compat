@@ -1606,6 +1606,12 @@ int main() {
             {"print",{{"id","adv"},{"data","missing width"}}},
             {"print",{{"id","no-font"},{"data","missing font"},{"width","720"}}},
             {"chgmsg",{{"id","adv"}}},
+            {"font",{{"id","adv"},{"face","font.ttf"},{"size","1e39"},{"color","0"}}},
+            {"font",{{"id","adv"},{"face","font.ttf"},{"size","25"},
+                      {"color","18446744073709551616"}}},
+            {"lytween",{{"id","bg"},{"param","left"},{"from","1e39"},{"to","60"},
+                        {"time","100"},{"delay","0"},{"ease","0"},{"repeat","1"},
+                        {"yoyo","0"},{"elapsed","0"},{"started","1"},{"from_current","0"}}},
         };
         for(const auto& command:malformed) {
             auto invalid=commands;
