@@ -2706,10 +2706,11 @@ bool Compositor::CaptureScene(std::vector<SavedCommand>& output, std::string& er
 bool Compositor::ValidateScene(const std::vector<SavedCommand>& scene, std::string& error) const {
     error.clear();
     std::map<std::string, std::pair<bool, bool>> anime_states;
+    std::string text_font_id;
     for (const auto& command : scene) {
         if (!CheckpointAttrs(command, error)) return false;
         const auto id = command.attrs.find("id");
-        if (command.name != "font" && (id == command.attrs.end() || id->second.empty())) {
+        if (id == command.attrs.end() || id->second.empty()) {
             return CheckpointError(error, "scene command has no layer id");
         }
         if (command.name == "lyc") {
@@ -2721,12 +2722,15 @@ bool Compositor::ValidateScene(const std::vector<SavedCommand>& scene, std::stri
         } else if (command.name == "font") {
             const auto face = command.attrs.find("face");
             if (face == command.attrs.end() || command.attrs.count("size") == 0 ||
+                command.attrs.count("color") == 0 ||
                 !CheckpointResource(packs_, save_directory_, face->second)) {
-                return CheckpointError(error, "scene font is missing");
+                return CheckpointError(error, "scene font is incomplete or missing");
             }
+            text_font_id = id->second;
         } else if (command.name == "print") {
-            if (command.attrs.count("data") == 0) {
-                return CheckpointError(error, "invalid scene text command");
+            if (command.attrs.count("data") == 0 || command.attrs.count("width") == 0 ||
+                text_font_id != id->second) {
+                return CheckpointError(error, "invalid scene text command or missing font");
             }
         } else if (command.name == "lyprop") {
             const auto mask = command.attrs.find("intermediate_render_mask");
@@ -2785,7 +2789,11 @@ bool Compositor::ValidateScene(const std::vector<SavedCommand>& scene, std::stri
                 !CheckpointResource(packs_, save_directory_, file->second)) {
                 return CheckpointError(error, "anime frame is missing");
             }
-        } else if (command.name != "chgmsg") {
+        } else if (command.name == "chgmsg") {
+            if (command.attrs.count("layered") == 0) {
+                return CheckpointError(error, "scene message command has no layered mode");
+            }
+        } else {
             return CheckpointError(error, "unsupported scene command: " + command.name);
         }
     }

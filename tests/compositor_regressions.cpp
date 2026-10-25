@@ -1600,6 +1600,21 @@ int main() {
         bad.push_back({"lyc",{{"id","missing"},{"file","missing.png"}}});
         Check(!scene.RestoreScene(bad,error),"missing scene resource rejected before mutation");
         Check(scene.Layers().size()==before_invalid.size(),"invalid restore preserves current layers");
+        const std::vector<artc::SavedCommand> malformed = {
+            {"font",{{"face","font.ttf"},{"size","25"},{"color","0"}}},
+            {"font",{{"id","adv"},{"face","font.ttf"},{"size","25"}}},
+            {"print",{{"id","adv"},{"data","missing width"}}},
+            {"print",{{"id","no-font"},{"data","missing font"},{"width","720"}}},
+            {"chgmsg",{{"id","adv"}}},
+        };
+        for(const auto& command:malformed) {
+            auto invalid=commands;
+            invalid.push_back(command);
+            Check(!scene.RestoreScene(invalid,error),
+                  ("malformed scene command rejected without throwing: "+command.name).c_str());
+            Check(scene.Layers().size()==before_invalid.size(),
+                  "malformed command preserves the current scene");
+        }
         scene.ReleaseGl();
     }
     std::filesystem::remove_all(save_directory);
