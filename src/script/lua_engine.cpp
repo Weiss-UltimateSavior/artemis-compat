@@ -2131,11 +2131,9 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
     std::vector<uint8_t> bytes;
     if(path.empty() || !ReadSaveFile(path,bytes)) {Log(kLogError,"load: cannot read slot "+file);return false;}
     const bool native=bytes.size()>=4 && std::memcmp(bytes.data(),"BOWS",4)==0;
+    const bool legacy=bytes.size()>=8 && std::memcmp(bytes.data(),"ARCV",4)==0 && bytes[4]==1;
 
-    if(!native) {
-        if(bytes.size()>=8 && std::memcmp(bytes.data(),"ARCV",4)==0 && bytes[4]==1) {
-            Log(kLogError,"load: ARCV v1 has no runtime state");return false;
-        }
+    if(!native && !legacy) {
         CheckpointV2 checkpoint;
         std::string error;
         if(!DecodeCheckpointV2(bytes,checkpoint,error)) {
@@ -2192,7 +2190,9 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
     }
 
     NativeSave snapshot;std::string error;
-    if(!DecodeNativeSave(bytes,snapshot,error)) {Log(kLogError,"load: invalid snapshot "+file+": "+error);return false;}
+    const bool decoded=native ? DecodeNativeSave(bytes,snapshot,error)
+                              : DecodeVariableBank(bytes,true,snapshot.variables);
+    if(!decoded) {Log(kLogError,"load: invalid snapshot "+file+": "+error);return false;}
     if(!ValidateBankGraphs(L_,snapshot.variables,error)) {Log(kLogError,"load: "+error);return false;}
     for(const auto& c:snapshot.layers)
         if(c.name!="lyc" && c.name!="lyprop" && c.name!="lyevent" && c.name!="lytween" && c.name!="anime") {
@@ -2225,8 +2225,8 @@ bool LuaEngine::LoadSnapshot(const std::string& file) {
     }
     advance(LoadPhase::RebuildDerived);
     if(!CallEvent(handler->second,{{"file",file}},false)) return false;
-    Log(kLogInfo,"load: native snapshot restored via onLoad: "+file+
-        " layers="+std::to_string(snapshot.layers.size()));
+    Log(kLogInfo,std::string("load: ")+(native?"native snapshot":"legacy checkpoint")+
+        " restored via onLoad: "+file+" layers="+std::to_string(snapshot.layers.size()));
     return true;
 }
 

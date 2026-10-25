@@ -1884,9 +1884,11 @@ int main(int argc, char** argv) {
         std::vector<uint8_t> legacy;
         Check(artc::EncodeVariableBank(legacy_items,true,legacy),"encode v1 fixture");
         Check(artc::WriteSaveFile((slot_dir/"legacy.dat").string(),legacy),"write v1 fixture");
-        Check(!engine.LoadSnapshot("legacy.dat"),"v1 rejected explicitly");
-        Check(flow.CurrentFile()==before_file && scene.Layers().size()==before_layers,
-              "v1 rejection preserves runner and scene");
+        Check(engine.LoadSnapshot("legacy.dat"),"v1 keeps the legacy onLoad compatibility path");
+        Check(engine.DoString("assert(e:var('scr')=='legacy' and restored==12)",
+                              "v1 compatibility result"),
+              "v1 restores variables and invokes the existing framework restorer");
+        Check(engine.LoadSnapshot("one.dat"),"return to the v2 fixture after legacy coverage");
 
         std::vector<uint8_t> valid;
         Check(artc::ReadSaveFile((slot_dir/"one.dat").string(),valid),"read valid v2 slot");
