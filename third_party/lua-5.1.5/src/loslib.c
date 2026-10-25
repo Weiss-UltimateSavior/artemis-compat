@@ -19,6 +19,18 @@
 #include "lauxlib.h"
 #include "lualib.h"
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+/* `system` is marked unavailable in the iOS SDK. Keep os.execute in the API
+   surface but make it report failure instead of dropping the os library. */
+static int lua_ios_system_unavailable (const char *command) {
+  (void)command;
+  return -1;
+}
+#define system lua_ios_system_unavailable
+#endif
+#endif
 
 static int os_pushresult (lua_State *L, int i, const char *filename) {
   int en = errno;  /* calls to Lua API may change this value */

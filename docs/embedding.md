@@ -75,13 +75,13 @@ performed for this build integration.
 ## Backend selection
 
 `ARTC_GRAPHICS_BACKEND` accepts AUTO, HEADLESS, GLES or DESKTOP_GL.
-`ARTC_AUDIO_BACKEND` accepts AUTO, OPENSL, OHAUDIO or NULL.
+`ARTC_AUDIO_BACKEND` accepts AUTO, OPENSL, OHAUDIO, APPLE or NULL.
 
 | Platform | AUTO graphics | AUTO audio |
 | --- | --- | --- |
 | Android | GLES | OpenSL ES |
 | OpenHarmony | GLES | OHAudio |
-| iOS | GLES | Configuration error: Apple audio not implemented |
+| iOS | GLES | APPLE (AudioUnit RemoteIO) |
 | Desktop core | Headless | Null |
 
 For macOS GLES tests, enable `ARTC_TEST_GLES` and provide ANGLE. Desktop OpenGL
@@ -90,8 +90,11 @@ Without ANGLE, macOS can still run the full GL regression on an offscreen CGL
 context: configure a test build with `ARTC_TEST_CGL=ON` (Darwin only). That
 target recompiles the core with the desktop GL backend and uses an offscreen
 FBO as the "screen" (a drawable-less CGL context has no default framebuffer).
-iOS compile experiments must explicitly select NULL audio; this is not a
-production iOS backend. The Cocoa host is macOS-only.
+The APPLE audio backend (AudioUnit) is selected automatically on iOS and can be
+selected explicitly on macOS (`ARTC_AUDIO_BACKEND=APPLE`) for regression; the
+macOS desktop core still defaults to NULL audio. Its behavior checks live in
+`apple_audio_regressions` (macOS, needs a default output device). The Cocoa host
+is macOS-only.
 
 If the parent already owns EGL/GLES (for example ANGLE), set `ARTC_GLES_TARGET`
 to an existing interface target that supplies both matching headers and libraries.

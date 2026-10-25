@@ -8,8 +8,11 @@ own source code under `src/`, `CMakeLists.txt`, and the documentation.
 - License: MIT
 - Copyright (C) 1994-2012 Lua.org, PUC-Rio
 - See `third_party/lua-5.1.5/doc/*.html` for the full license text.
-- Vendored unmodified source (the `lua.c`/`luac.c` standalone interpreters are
-  excluded from the build).
+- Vendored source with one local patch: `src/loslib.c` remaps `system` to a
+  stub that returns -1 when building for iOS (`TARGET_OS_IPHONE` only), because
+  the iOS SDK marks `system` unavailable. `os.execute` keeps its API surface
+  and reports failure instead. The `lua.c`/`luac.c` standalone interpreters are
+  excluded from the build.
 
 ## stb_vorbis (`third_party/stb_vorbis/stb_vorbis.c`)
 - Author: Sean Barrett (nothings.org)
