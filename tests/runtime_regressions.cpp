@@ -639,7 +639,13 @@ int main(int argc, char** argv) {
         assert(tonumber(e:var('t.ly.yscale')) == 125)
         assert(tonumber(e:var('t.ly.rotate')) == 30)
         assert(tonumber(e:var('t.ly.alpha')) == 200)
+        assert(t.ly.xscale == 150 and t.ly.yscale == 125)
+        assert(t.ly.rotate == 30 and t.ly.alpha == 200)
+        assert(t.ly.left == 12 and t.ly.top == 8)
+        assert(t.ly.width == 320 and t.ly.height == 240)
         e:tag{'var',name='t.ly',system='get_layer_info',style='map',id='layer_info_missing'}
+        assert(t.ly.xscale == 100 and t.ly.yscale == 100)
+        assert(t.ly.rotate == 0 and t.ly.alpha == 255)
         assert(tonumber(e:var('t.ly.xscale')) == 100)
         assert(tonumber(e:var('t.ly.yscale')) == 100)
         assert(tonumber(e:var('t.ly.rotate')) == 0)

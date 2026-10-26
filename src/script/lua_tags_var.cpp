@@ -176,6 +176,46 @@ bool LuaEngine::TagVarRaw(lua_State *L) {
                 vars_[nm + ".yscale"] = std::to_string((int)info.yscale);
                 vars_[nm + ".rotate"] = std::to_string((int)info.rotate);
                 vars_[nm + ".alpha"] = std::to_string((int)info.alpha);
+                if (field("style") == "map") {
+                    // style='map' also exposes a real dotted Lua table for
+                    // scripts that read t.ly.xscale directly, rather than
+                    // querying the string-backed e:var('t.ly.xscale') key.
+                    lua_pushvalue(L, LUA_GLOBALSINDEX);
+                    bool valid = true;
+                    size_t start = 0;
+                    while (valid) {
+                        const size_t dot = nm.find('.', start);
+                        const std::string part = nm.substr(start, dot - start);
+                        if (part.empty()) {
+                            valid = false;
+                            break;
+                        }
+                        lua_getfield(L, -1, part.c_str());
+                        if (!lua_istable(L, -1)) {
+                            lua_pop(L, 1);
+                            lua_newtable(L);
+                            lua_pushvalue(L, -1);
+                            lua_setfield(L, -3, part.c_str());
+                        }
+                        if (dot == std::string::npos) break;
+                        start = dot + 1;
+                    }
+                    if (valid) {
+                        auto number = [&](const char *key, float value) {
+                            lua_pushnumber(L, value);
+                            lua_setfield(L, -2, key);
+                        };
+                        number("left", info.left);
+                        number("top", info.top);
+                        number("width", info.width);
+                        number("height", info.height);
+                        number("xscale", info.xscale);
+                        number("yscale", info.yscale);
+                        number("rotate", info.rotate);
+                        number("alpha", info.alpha);
+                    }
+                    lua_pop(L, 1);
+                }
             }
         } else {
             auto it = sysvals_.find(sys);
