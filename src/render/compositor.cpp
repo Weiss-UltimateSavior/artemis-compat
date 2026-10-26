@@ -1755,9 +1755,15 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
         // Watermark eviction: cells placed earlier in this pass and the other
         // layers' glyphs reference evicted pages — drop them and retry on the
         // fresh cache. A single text exceeding the page budget alone fails.
-        if (attempt >= 1) return false;
+        // Always consume the one-shot notification, including that failure,
+        // so later unrelated text is not rejected by the same eviction.
+        if (attempt >= 1) {
+            glyph_atlas_.ClearReset();
+            return false;
+        }
         for (auto &l : layers_) { l.glyphs.clear(); l.text.clear(); }
         DropGlyphGl();
+        glyph_atlas_.ClearReset();
     }
     // Ensure every referenced page has an up-to-date GPU texture.
     for (size_t i = 0; i < positioned.size(); ++i)

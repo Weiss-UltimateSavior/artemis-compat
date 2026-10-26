@@ -380,6 +380,27 @@ int main() {
         c.Shutdown();
         std::filesystem::remove(metric_path);
     }
+    // Watermark eviction must be a recoverable one-shot event. Distinct fill
+    // colors force real atlas misses and cross the six-page limit; HEADLESS
+    // mocks cannot cover this path.
+    {
+        artc::Compositor c; c.Init(256,192); c.SetPackManager(&packs);
+        Check(c.LoadFont(name), "load font for atlas eviction");
+        int first_failure=-1;
+        for(int i=0;i<400;++i) {
+            if(!c.SetText("flood."+std::to_string(i),"A",256,
+                          0x100000+static_cast<uint32_t>(i),300)) {
+                first_failure=i;
+                break;
+            }
+        }
+        Check(first_failure<0, "SetText retries successfully after atlas eviction");
+        const bool recovered=c.SetText("after.eviction","A",32,0xffffff,100);
+        const auto* after=Find(c,"after.eviction");
+        Check(recovered && after && after->glyphs.size()==1,
+              "unrelated text still renders after atlas eviction");
+        c.Shutdown();
+    }
     std::filesystem::remove(path);
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
     eglDestroyContext(display,context); eglDestroySurface(display,surface); eglTerminate(display);
