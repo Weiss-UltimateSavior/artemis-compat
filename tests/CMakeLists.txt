@@ -64,6 +64,10 @@ add_executable(save_regressions save_regressions.cpp)
 target_link_libraries(save_regressions PRIVATE artemis_core)
 add_test(NAME save_regressions COMMAND save_regressions)
 
+add_executable(checkpoint_regressions checkpoint_regressions.cpp)
+target_link_libraries(checkpoint_regressions PRIVATE artemis_core)
+add_test(NAME checkpoint_regressions COMMAND checkpoint_regressions)
+
 add_executable(iet_regressions iet_regressions.cpp)
 target_link_libraries(iet_regressions PRIVATE artemis_core)
 add_test(NAME iet_regressions COMMAND iet_regressions)

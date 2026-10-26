@@ -1484,6 +1484,145 @@ int main() {
               "steady-state Draw reuses the id index and owner list");
         c.ReleaseGl();c.Init(32,32);
     }
+    {
+        artc::Compositor scene;
+        scene.Init(32,32);
+        scene.SetPackManager(&packs);
+        Check(scene.LoadFont(name),"checkpoint scene font");
+        Check(scene.LoadImage("bg","small.tga"),"checkpoint scene image");
+        scene.SetProps("bg",{{"left","12"},{"top","34"},{"alpha","128"},{"visible","1"}});
+        scene.SetMessageLayered("bg",false);
+        Check(scene.SetText("adv","restored text",25,0xffffff,720,
+                            {{"align","left"},{"outline","1"}}),"checkpoint scene text");
+        std::vector<artc::SavedCommand> commands;
+        std::string error;
+        Check(scene.CaptureScene(commands,error),"capture semantic scene");
+        Check(!commands.empty(),"scene emits semantic commands");
+        scene.DeleteLayer("bg");
+        scene.DeleteLayer("adv");
+        Check(scene.RestoreScene(commands,error),"restore semantic scene");
+        Check(scene.Layers().size()==2,"restored layer count");
+        const auto& bg=scene.Layers().at(0);
+        Check(bg.source_file=="small.tga" && bg.x==12 && bg.y==34 &&
+              bg.alpha>0.49f && bg.alpha<0.51f && bg.visible && bg.message_overlay,
+              "restore image semantics");
+        const auto& adv=scene.Layers().at(1);
+        Check(adv.text=="restored text" && adv.text_size==25 &&
+              adv.text_wrap_width==720 && adv.text_style.at("align")=="left",
+              "restore text semantics");
+
+        const auto before=scene.Layers();
+        scene.SetLayerMesh("bg",{0,0,0,0, 1,0,1,0, 0,1,1,1});
+        Check(!scene.CaptureScene(commands,error),"mesh checkpoint is explicitly unsupported");
+        Check(scene.Layers().size()==before.size(),"unsupported capture preserves layers");
+        scene.SetLayerMesh("bg",{});
+        scene.AddTween("bg",{{"param","left"},{"from","12"},{"to","60"},
+                            {"time","1000"},{"delay","100"},{"loop","0"},{"yoyo","-1"}},1000);
+        scene.SetAnimeFrame("cursor","init","small.tga",0,-1,{{"clip","0,0,4,4"}},1000);
+        scene.SetAnimeFrame("cursor","add","small.tga",500,-1,{{"clip","4,0,4,4"}},1000);
+        scene.SetAnimeFrame("cursor","add","small.tga",1000,-1,{{"clip","8,0,4,4"}},1000);
+        scene.SetAnimeFrame("cursor","end","",1000,-1,{},1000);
+        scene.Update(1250);
+        Check(scene.CaptureScene(commands,error),"capture active tween and anime");
+        const auto tween=std::find_if(commands.begin(),commands.end(),[](const auto& command) {
+            return command.name=="lytween";
+        });
+        Check(tween!=commands.end() && tween->attrs.at("param")=="left" &&
+              std::stod(tween->attrs.at("elapsed"))==250 &&
+              tween->attrs.at("repeat")=="-1" && tween->attrs.at("yoyo")=="1",
+              "capture tween loop and signed phase");
+        const auto anime_end=std::find_if(commands.begin(),commands.end(),[](const auto& command) {
+            return command.name=="anime" && command.attrs.at("mode")=="end";
+        });
+        Check(anime_end!=commands.end() && anime_end->attrs.at("loop")=="-1" &&
+              std::stod(anime_end->attrs.at("elapsed"))==250,
+              "capture anime loop and phase");
+        scene.BeginTweenSet();
+        scene.AddTween("bg",{{"param","top"},{"from","34"},{"to","80"},
+                            {"time","200"},{"delay","100"}},1250);
+        scene.AddTween("bg",{{"param","top"},{"to","20"},{"time","200"}},1250);
+        scene.EndTweenSet(1250);
+        Check(scene.CaptureScene(commands,error),"capture ordered tween set");
+        const auto future=std::find_if(commands.begin(),commands.end(),[](const auto& command) {
+            return command.name=="lytween" && command.attrs.at("param")=="top" &&
+                   command.attrs.at("to")=="20.000000";
+        });
+        Check(future!=commands.end() && std::stod(future->attrs.at("elapsed"))==-300,
+              "future tween-set segment retains a negative phase");
+        scene.BeginTweenSet();
+        Check(!scene.CaptureScene(commands,error),"uncommitted tween set is unsupported");
+        scene.EndTweenSet(1250);
+        scene.DeleteLayer("bg");
+        scene.DeleteLayer("cursor");
+        Check(scene.RestoreScene(commands,error),"restore animated scene");
+        scene.Update(2100);
+        const auto& bg_restored=scene.Layers().at(0);
+        Check(bg_restored.x>59.9f && bg_restored.x<60.1f,
+              "infinite yoyo resumes at the original cycle endpoint");
+        scene.Update(1750);
+        const auto cursor_it=std::find_if(scene.Layers().begin(),scene.Layers().end(),
+                                          [](const auto& layer){return layer.id=="cursor";});
+        Check(cursor_it!=scene.Layers().end(),"restored cursor exists");
+        const auto& cursor=*cursor_it;
+        Check(cursor.source_file=="small.tga" && cursor.tex_w>0 &&
+              std::abs(cursor.u0-4.0f/cursor.tex_w)<0.0001f,
+              "looping anime advances from the restored phase");
+        auto before_animation=scene.Layers();
+        auto bad_animation=commands;
+        for(auto& command:bad_animation)
+            if(command.name=="lytween") command.attrs["elapsed"]="nan";
+        Check(!scene.RestoreScene(bad_animation,error),"non-finite tween phase rejected");
+        Check(scene.Layers().size()==before_animation.size(),"invalid animation preserves scene");
+        bad_animation=commands;
+        for(auto& command:bad_animation)
+            if(command.name=="anime" && command.attrs.at("mode")=="add")
+                command.attrs["file"]="missing.png";
+        Check(!scene.RestoreScene(bad_animation,error),"missing anime frame rejected before mutation");
+        Check(scene.Layers().size()==before_animation.size(),"missing anime frame preserves scene");
+        scene.SetAnimeFrame("finished","init","small.tga",0,1,{{"clip","0,0,4,4"}},2000);
+        scene.SetAnimeFrame("finished","add","small.tga",500,1,{{"clip","8,0,4,4"}},2000);
+        scene.SetAnimeFrame("finished","end","",500,1,{},2000);
+        scene.Update(2500);
+        Check(scene.CaptureScene(commands,error),"capture completed finite anime");
+        Check(scene.RestoreScene(commands,error),"restore completed finite anime");
+        const auto finished_it=std::find_if(scene.Layers().begin(),scene.Layers().end(),
+                                            [](const auto& layer){return layer.id=="finished";});
+        Check(finished_it!=scene.Layers().end() && finished_it->u0>0,
+              "completed finite anime holds its last frame");
+        scene.DeleteTweens("bg");
+        scene.Draw();
+        Check(scene.BeginTransition(0,100,{},0,0,0),"start transition");
+        Check(scene.CaptureScene(commands,error),"capture final scene during transition");
+        Check(scene.RestoreScene(commands,error),"restore final transition scene");
+        Check(!scene.TransitionActive(),"old-frame overlay is not restored");
+        const auto before_invalid=scene.Layers();
+        auto bad=commands;
+        bad.push_back({"lyc",{{"id","missing"},{"file","missing.png"}}});
+        Check(!scene.RestoreScene(bad,error),"missing scene resource rejected before mutation");
+        Check(scene.Layers().size()==before_invalid.size(),"invalid restore preserves current layers");
+        const std::vector<artc::SavedCommand> malformed = {
+            {"font",{{"face","font.ttf"},{"size","25"},{"color","0"}}},
+            {"font",{{"id","adv"},{"face","font.ttf"},{"size","25"}}},
+            {"print",{{"id","adv"},{"data","missing width"}}},
+            {"print",{{"id","no-font"},{"data","missing font"},{"width","720"}}},
+            {"chgmsg",{{"id","adv"}}},
+            {"font",{{"id","adv"},{"face","font.ttf"},{"size","1e39"},{"color","0"}}},
+            {"font",{{"id","adv"},{"face","font.ttf"},{"size","25"},
+                      {"color","18446744073709551616"}}},
+            {"lytween",{{"id","bg"},{"param","left"},{"from","1e39"},{"to","60"},
+                        {"time","100"},{"delay","0"},{"ease","0"},{"repeat","1"},
+                        {"yoyo","0"},{"elapsed","0"},{"started","1"},{"from_current","0"}}},
+        };
+        for(const auto& command:malformed) {
+            auto invalid=commands;
+            invalid.push_back(command);
+            Check(!scene.RestoreScene(invalid,error),
+                  ("malformed scene command rejected without throwing: "+command.name).c_str());
+            Check(scene.Layers().size()==before_invalid.size(),
+                  "malformed command preserves the current scene");
+        }
+        scene.ReleaseGl();
+    }
     std::filesystem::remove_all(save_directory);
     std::filesystem::remove(path);
     c.Shutdown();

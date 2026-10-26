@@ -6,7 +6,10 @@
 // the real JNIEnv.
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <string>
+#include <vector>
 
 // Keep instantiations out of the shared library's dynamic export table.
 #if defined(__GNUC__) || defined(__clang__)
@@ -73,6 +76,23 @@ ARTC_JNI_HIDDEN inline int FrameSleepMs(bool renderer_ready, bool drew, bool swa
 // keys, are left unhandled so the system still changes the volume.
 ARTC_JNI_HIDDEN inline bool EngineConsumesKeyId(int id) {
     return id > 0;
+}
+
+// NativeActivity receives a game directory, not a host-selected pack. Always
+// use root.pfs as the chain base; filesystem enumeration order is not stable
+// and may otherwise select a translation or compatibility patch without boot.
+ARTC_JNI_HIDDEN inline void SortPackPaths(std::vector<std::string>& packs) {
+    const auto is_root = [](const std::string& path) {
+        if (path.size() < 9) return false;
+        std::string suffix = path.substr(path.size() - 9);
+        for (char& c : suffix) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return suffix == "/root.pfs";
+    };
+    std::sort(packs.begin(), packs.end(), [&](const std::string& a, const std::string& b) {
+        const bool ra = is_root(a), rb = is_root(b);
+        if (ra != rb) return ra;
+        return a < b;
+    });
 }
 
 } // namespace jni

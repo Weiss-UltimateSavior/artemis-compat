@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cctype>
 #include <cstdlib>
+#include <limits>
 
 namespace artc {
 
@@ -303,6 +304,160 @@ void AsbRunner::DiscardFlow() {
     ++flow_revision_;
     loaded_=false;
     halted_=true;
+}
+
+namespace {
+CheckpointWait CheckpointFromWait(const LuaEngine::WaitState& state) {
+    CheckpointWait out{state.waiting, state.timed, state.accept_input, state.announced,
+                       state.sound, state.transition, state.sound_key, state.video_key, 0,
+                       state.auto_elapsed};
+    if (state.timed) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            state.deadline - std::chrono::steady_clock::now()).count();
+        out.remaining_ms = static_cast<uint64_t>(remaining > 0 ? remaining : 0);
+    }
+    return out;
+}
+
+LuaEngine::WaitState WaitFromCheckpoint(const CheckpointWait& state) {
+    return {state.waiting, state.timed, state.accept_input, state.announced,
+            state.sound, state.transition, state.sound_key, state.video_key,
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(state.remaining_ms),
+            state.auto_elapsed};
+}
+
+bool ValidCheckpointWait(const CheckpointWait& wait, std::string& error) {
+    if (wait.remaining_ms == std::numeric_limits<uint64_t>::max()) {
+        error = "invalid remaining wait";
+        return false;
+    }
+    return true;
+}
+
+bool ParseCheckpointScript(PackManager* packs, const std::string& file,
+                           AsbScript& script, std::string& error) {
+    if (!packs) {
+        error = "no pack source";
+        return false;
+    }
+    std::vector<uint8_t> image;
+    if (!packs->Read(file, image)) {
+        error = "script not found: " + file;
+        return false;
+    }
+    const bool binary = image.size() > 4 && image[0] == 'A' && image[1] == 'S' &&
+                        image[2] == 'B' && image[3] == '\0';
+    const bool ok = binary ? ParseAsb(image, &script) : [&] {
+        std::string decoded;
+        DecodeToUtf8(std::string(image.begin(), image.end()), TextCharset(), decoded);
+        return ParseIetScript(PreprocessScript(decoded), &script);
+    }();
+    if (!ok) error = "script parse failed: " + file;
+    return ok;
+}
+} // namespace
+
+CheckpointFlow AsbRunner::CaptureFlow() const {
+    CheckpointFlow out;
+    out.current_file = current_file_;
+    out.pc = pc_;
+    out.loaded = loaded_;
+    out.halted = halted_;
+    out.pc_pending = pc_pending_;
+    if (lua_) {
+        const auto wait = lua_->SuspendWait();
+        out.wait = CheckpointFromWait(wait);
+        lua_->RestoreWait(wait);
+    }
+    out.frames.reserve(callstack_.size());
+    for (const auto& frame : callstack_) {
+        out.frames.push_back({frame.file, frame.pc, frame.halted, frame.macro_scope,
+                              CheckpointFromWait(frame.wait)});
+    }
+    out.global_labels = global_labels_;
+    return out;
+}
+
+bool AsbRunner::ValidateFlow(const CheckpointFlow& flow, std::string& error) const {
+    error.clear();
+    if (!ValidCheckpointWait(flow.wait, error)) return false;
+    if (flow.loaded && flow.current_file.empty()) {
+        error = "loaded flow has no current script";
+        return false;
+    }
+    if (!flow.current_file.empty()) {
+        AsbScript script;
+        if (!ParseCheckpointScript(packs_, flow.current_file, script, error)) return false;
+        if (flow.pc >= script.lines.size()) {
+            error = "current PC is out of range";
+            return false;
+        }
+    }
+    for (const auto& frame : flow.frames) {
+        if (frame.file.empty()) {
+            error = "frame has no script";
+            return false;
+        }
+        if (!ValidCheckpointWait(frame.wait, error)) return false;
+        AsbScript script;
+        if (!ParseCheckpointScript(packs_, frame.file, script, error)) return false;
+        if (frame.pc >= script.lines.size()) {
+            error = "frame PC is out of range";
+            return false;
+        }
+    }
+    for (const auto& label : flow.global_labels) {
+        if (label.first.empty() || label.second.empty()) {
+            error = "invalid global label";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool AsbRunner::RestoreFlow(const CheckpointFlow& flow, std::string& error) {
+    if (!ValidateFlow(flow, error)) return false;
+    DiscardFlow();
+    executing_ = false;
+    event_file_.clear();
+    event_pc_ = 0;
+    event_halted_ = false;
+    event_wait_ = {};
+    global_labels_ = flow.global_labels;
+
+    if (!flow.current_file.empty()) {
+        std::vector<uint8_t> image;
+        if (!packs_ || !packs_->Read(flow.current_file, image)) {
+            error = "script not found during restore: " + flow.current_file;
+            return false;
+        }
+        if (!Load(image, "")) {
+            error = "script load failed during restore: " + flow.current_file;
+            return false;
+        }
+        current_file_ = flow.current_file;
+        pc_ = flow.pc;
+        loaded_ = flow.loaded;
+        halted_ = flow.halted;
+        pc_pending_ = flow.pc_pending;
+    } else {
+        script_ = {};
+        current_file_.clear();
+        pc_ = 0;
+        loaded_ = false;
+        halted_ = true;
+        pc_pending_ = false;
+    }
+
+    callstack_.clear();
+    callstack_.reserve(flow.frames.size());
+    for (const auto& frame : flow.frames) {
+        callstack_.push_back({frame.file, frame.pc, frame.halted, lua_,
+                              WaitFromCheckpoint(frame.wait), frame.macro_scope});
+    }
+    if (lua_) lua_->RestoreWait(WaitFromCheckpoint(flow.wait));
+    ++flow_revision_;
+    return true;
 }
 
 void AsbRunner::EndEvent(uint64_t token) {
