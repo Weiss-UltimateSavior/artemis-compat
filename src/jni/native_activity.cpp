@@ -41,6 +41,8 @@
 #include "config/ini.h"
 #include "render/renderer.h"
 #include "render/compositor.h"
+#include "jni/host_lifecycle.h"
+#include "jni/session_pause.h"
 
 #define TAG "Artemis"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -234,6 +236,9 @@ EngineState g_state;
 
 bool EngineRunning() { return g_state.running; }
 
+std::atomic<bool> g_requested_audio_pause{false};
+// NativeActivity lifecycle is independent of the sound-only JNI pause hook.
+std::atomic<bool> g_activity_paused{true};
 std::vector<std::string> ListPacks(const char *dir) {
     std::vector<std::string> found;
     if (!dir) return found;
@@ -429,71 +434,91 @@ void EngineThreadMain(ANativeActivity *activity) {
 
     artc::Renderer renderer;
     bool booted = false;
+    int applied_audio_pause = -1;
+    artc::SessionPause session_pause;
+    bool context_failed = false;
     uint64_t drawn_rev = ~0ull;   // redraw gate: last presented layer revision
 
     while (g_state.running) {
         ANativeWindow *wanted, *current, *lost;
+        bool window_changed;
         {
             std::lock_guard<std::mutex> lk(g_state.mutex);
             wanted = g_state.wanted_window;
             current = g_state.current_window;
             lost = g_state.lost_window;
             g_state.lost_window = nullptr;
-        }
-        // Reconcile the render surface with the activity's window. A window
-        // change is a *surface* change, not an engine reset: the EGL context
-        // and the engine session (Lua state + compositor layers) are kept, so
-        // returning from the background resumes in place instead of re-running
-        // the boot chain. Only a genuinely lost context falls back to re-boot.
-        const bool window_changed = (wanted != current);
-        if (wanted == nullptr) {
-            // Window gone (background / surface destroyed). Stop swapping into
-            // the dead window but keep the context + session alive, and suspend
-            // the clock and audio so the game neither advances nor plays on
-            // while it is hidden.
-            if (renderer.Ready()) {
-                renderer.ReleaseSurface();
-                if (ctx->Started()) {
-                    ctx->lua().PauseClock();
-                    ctx->lua().PauseAudio();
-                }
-            }
-        } else if (window_changed) {
-            if (current) renderer.ReleaseSurface();  // unbind the old EGL surface
-            renderer.Init(wanted);                   // rebind on the surviving context
-            // ContextReused()==false means the GPU state did not survive (a
-            // fresh context was built): rebuild the scene via the boot chain,
-            // the historical behaviour.
-            if (renderer.Ready() && !renderer.ContextReused() && booted) {
-                ctx->compositor().ReleaseGl();
-                ctx->ResetSession();
-                booted = false;
-            }
-            if (!renderer.Ready())
-                LOGE("renderer init failed: %s", renderer.LastError().c_str());
-            if (booted && renderer.Ready() && ctx->Started()) {
-                ctx->lua().ResumeClock();           // undo the background suspend
-                ctx->lua().ResumeAudio();
-            }
-            drawn_rev = ~0ull;                      // new surface: force a first draw
+            // After genuine context loss keep the old window reference until
+            // final EGL shutdown; neither migrate surfaces nor recreate the VM.
+            window_changed = !context_failed && !renderer.ContextLost() &&
+                (lost || wanted != current || (wanted && !renderer.Ready()));
+            // Take the engine's candidate reference while the callback owns it.
+            if (window_changed && wanted) ANativeWindow_acquire(wanted);
         }
         if (window_changed) {
-            if (current) ANativeWindow_release(current);
-            current = wanted;
-            std::lock_guard<std::mutex> lk(g_state.mutex);
-            g_state.current_window = current;
+            bool detached = !renderer.HasRetainedContext();
+            if (renderer.HasRetainedContext()) detached = renderer.DetachSurface();
+            if (!detached) {
+                // A failed parking bind must not release the window still used
+                // by EGL. Retry with the same session on the next iteration.
+                if (wanted) ANativeWindow_release(wanted);
+                LOGE("renderer detach failed: %s", renderer.LastError().c_str());
+            } else {
+                if (current) ANativeWindow_release(current);
+                current = wanted;
+                if (current && !context_failed && !renderer.ContextLost()) {
+                    bool attached = false;
+                    if (renderer.HasRetainedContext()) {
+                        attached = renderer.AttachWindow(current);
+                    } else if (!ctx->Started()) {
+                        attached = renderer.Init(current);
+                    }
+                    if (attached) {
+                        renderer.SetStage(ctx->stageW(), ctx->stageH(),
+                                          ctx->ini().GetInt("COMMON", "SIDECUT", 0) == 1);
+                        drawn_rev = ~0ull;
+                    } else LOGE("renderer attach failed: %s", renderer.LastError().c_str());
+                }
+                std::lock_guard<std::mutex> lk(g_state.mutex);
+                g_state.current_window = current;
+            }
         }
-        if (lost) ANativeWindow_release(lost);
-
-        // [reset] tag = engine reboot (language-select flow ends this way):
-        // drop the Lua session so the boot chain re-runs on the next frame.
-        if (ctx->Started() && ctx->lua().ConsumeResetRequest()) {
+        if (renderer.ContextLost() && !context_failed) {
+            context_failed = true;
+            // CPU reconstruction after genuine context loss is not implemented.
+            // Preserve the VM/progress and stop rendering; never silently reboot.
+            LOGE("EGL context lost; session retained, rendering suspended");
+        }
+        if (renderer.Ready() && renderer.RefreshSize()) {
+            renderer.SetStage(ctx->stageW(), ctx->stageH(), ctx->ini().GetInt("COMMON", "SIDECUT", 0) == 1);
+            drawn_rev = ~0ull;
+        }
+        const bool session_paused = g_activity_paused.load(std::memory_order_acquire) ||
+                                    !renderer.Ready() || context_failed;
+        // Consume a pending [reset] before any resume-time dragout callback.
+        // A paused/lost context keeps the request pending until GL is usable.
+        if (ctx->Started() && session_pause.BeginFrame(ctx->lua(), session_paused)) {
             LOGI("engine reset requested; re-running boot chain");
             ctx->compositor().ReleaseGl();
             booted = false;
+            applied_audio_pause = -1;
             drawn_rev = ~0ull;
             ctx->ResetSession();
         }
+        if (ctx->Started()) {
+            artc::LuaEngine &lua = ctx->lua();
+            const bool audio_paused = session_paused ||
+                g_requested_audio_pause.load(std::memory_order_acquire);
+            if (static_cast<int>(audio_paused) != applied_audio_pause) {
+                if (audio_paused) lua.PauseAudio(); else lua.ResumeAudio();
+                applied_audio_pause = audio_paused;
+            }
+        }
+        if (session_paused) {
+            std::lock_guard<std::mutex> lk(g_state.input_mutex);
+            g_state.input_queue_events.clear();
+        }
+
         // [exit] tag = the framework's go_exit (title exit → dialog YES):
         // terminate the app from the game thread.
         if (ctx->Started() && ctx->lua().ConsumeExitRequest()) {
@@ -503,7 +528,7 @@ void EngineThreadMain(ANativeActivity *activity) {
             break;
         }
 
-        if (renderer.Ready()) {
+        if (renderer.Ready() && !session_paused) {
             g_state.win_w = renderer.Width();
             g_state.win_h = renderer.Height();
             if (!booted) {
@@ -513,6 +538,13 @@ void EngineThreadMain(ANativeActivity *activity) {
                 if (!booted) break; // nothing to present; stop the thread
             }
             artc::LuaEngine &lua = ctx->lua();
+            // Boot can start sounds. Apply a pending sound-only pause before
+            // running the first story frame without suspending the VM clock.
+            if (applied_audio_pause < 0) {
+                const bool paused = g_requested_audio_pause.load(std::memory_order_acquire);
+                if (paused) lua.PauseAudio(); else lua.ResumeAudio();
+                applied_audio_pause = paused;
+            }
             artc::AsbRunner &runner = ctx->runner();
             // Drain the enqueueTag queue at a command boundary (after each
             // script command AND after input-dispatched calllua). The
@@ -630,7 +662,7 @@ void EngineThreadMain(ANativeActivity *activity) {
             if (drawn_rev != ctx->compositor().Revision() || animating) {
                 renderer.Clear();   // clears the full surface (letterbox bars too)
                 ctx->compositor().Draw();  // layers (script [flip] draws only)
-                renderer.Present(); // single present per frame — no flicker
+                renderer.Present(); // single present per frame
                 drawn_rev = ctx->compositor().Revision();
                 drew = true;
             }
@@ -657,22 +689,35 @@ void EngineThreadMain(ANativeActivity *activity) {
             ANativeWindow_release(g_state.current_window);
             g_state.current_window = nullptr;
         }
-        if (g_state.lost_window) {
-            ANativeWindow_release(g_state.lost_window);
-            g_state.lost_window = nullptr;
+        g_state.lost_window = nullptr;
+        if (g_state.wanted_window) {
+            ANativeWindow_release(g_state.wanted_window);
+            g_state.wanted_window = nullptr;
         }
     }
 }
 
 } // namespace
 
+namespace artc {
+void RequestAudioPause(bool paused) {
+    g_requested_audio_pause.store(paused, std::memory_order_release);
+}
+}
+
 extern "C" JNIEXPORT void JNICALL
 ANativeActivity_onCreate(ANativeActivity *activity, void *savedState,
                          size_t savedStateSize) {
     activity->callbacks->onStart = [](ANativeActivity *) {};
-    activity->callbacks->onResume = [](ANativeActivity *) {};
-    activity->callbacks->onPause = [](ANativeActivity *) {};
-    activity->callbacks->onStop = [](ANativeActivity *) {};
+    activity->callbacks->onResume = [](ANativeActivity *) {
+        g_activity_paused.store(false, std::memory_order_release);
+    };
+    activity->callbacks->onPause = [](ANativeActivity *) {
+        g_activity_paused.store(true, std::memory_order_release);
+    };
+    activity->callbacks->onStop = [](ANativeActivity *) {
+        g_activity_paused.store(true, std::memory_order_release);
+    };
     activity->callbacks->onDestroy = [](ANativeActivity *) {
         LOGI("compat engine: onDestroy");
         g_state.running = false;
@@ -680,9 +725,10 @@ ANativeActivity_onCreate(ANativeActivity *activity, void *savedState,
     };
     activity->callbacks->onNativeWindowCreated = [](ANativeActivity *,
                                                     ANativeWindow *window) {
-        ANativeWindow_acquire(window);
         {
             std::lock_guard<std::mutex> lk(g_state.mutex);
+            ANativeWindow_acquire(window);
+            if (g_state.wanted_window) ANativeWindow_release(g_state.wanted_window);
             g_state.wanted_window = window;
         }
         LOGI("native window created");
@@ -690,11 +736,11 @@ ANativeActivity_onCreate(ANativeActivity *activity, void *savedState,
     activity->callbacks->onNativeWindowDestroyed = [](ANativeActivity *,
                                                       ANativeWindow *window) {
         std::lock_guard<std::mutex> lk(g_state.mutex);
-        if (g_state.wanted_window == window) g_state.wanted_window = nullptr;
-        if (g_state.current_window == window) {
-            g_state.lost_window = window;
-            g_state.current_window = nullptr;
+        if (g_state.wanted_window == window) {
+            ANativeWindow_release(g_state.wanted_window);
+            g_state.wanted_window = nullptr;
         }
+        if (g_state.current_window == window) g_state.lost_window = window;
         LOGI("native window destroyed");
     };
     activity->callbacks->onNativeWindowResized = nullptr;
@@ -709,6 +755,7 @@ ANativeActivity_onCreate(ANativeActivity *activity, void *savedState,
 
     CacheNativeInput(activity);
 
+    g_activity_paused.store(true, std::memory_order_release);
     g_state.running = true;
     LOGI("compat engine: ANativeActivity_onCreate (clean-room build)");
     g_state.worker = std::thread(EngineThreadMain, activity);

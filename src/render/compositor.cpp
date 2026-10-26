@@ -8,7 +8,7 @@
 // KrKr2-Next: the GLES2 compositor is also used on OpenHarmony (the host
 // bridge makes an EGL context current before driving it). ARTC_HAS_GLES is
 // set by cpp/artemis/CMakeLists.txt for every platform with a GLES2 sysroot.
-#if defined(__ANDROID__) && !defined(ARTC_HAS_GLES)
+#if defined(__ANDROID__) && !defined(ARTC_HAS_GLES) && !defined(ARTC_HEADLESS)
 #define ARTC_HAS_GLES 1
 #endif
 
@@ -1016,9 +1016,21 @@ bool Compositor::Update(double now_ms) {
 }
 
 double Compositor::PendingAnimationMs(double now_ms) const {
+    return PendingAnimationMsImpl(now_ms, false);
+}
+
+double Compositor::PendingBlockingAnimationMs(double now_ms) const {
+    return PendingAnimationMsImpl(now_ms, true);
+}
+
+double Compositor::PendingAnimationMsImpl(double now_ms, bool blocking_only) const {
     double remain = 0;
     for (const Tween &tw : tweens_) {
-        const double end = tw.start_ms + tw.Duration();
+        const double duration = tw.Duration();
+        // A zero-time segment still has a finite delay even with loop=-1.
+        // Skip actual endless motion, not every negative repeat declaration.
+        if (blocking_only && std::isinf(duration)) continue;
+        const double end = tw.start_ms + duration;
         if (end - now_ms > remain) remain = end - now_ms;
     }
     if (trans_active_) {
@@ -1480,9 +1492,38 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
         return it == style.end() ? fallback : std::atof(it->second.c_str());
     };
     size = std::clamp(size, 1.0f, 256.0f);
-    const float scale = stbtt_ScaleForMappingEmToPixels(info, size);
+    // [font size] requests the ascender-to-descender pixel height, not
+    // pixels per em. Tall vertical metrics otherwise enlarge glyphs and
+    // change wrapping. Keep the OS/2 baseline and layout below intact.
+    // Some fonts leave hhea metrics empty and provide their height in
+    // OS/2. Resolve a positive height before dividing; rejecting an unusable
+    // font is preferable to feeding infinity into glyph layout or the atlas.
+    int height_ascent = 0, height_descent = 0;
+    stbtt_GetFontVMetrics(info, &height_ascent, &height_descent, nullptr);
+    int font_height = height_ascent - height_descent;
+    if (font_height <= 0 &&
+        stbtt_GetFontVMetricsOS2(info, &height_ascent, &height_descent, nullptr))
+        font_height = height_ascent - height_descent;
+    if (font_height <= 0) return false;
+    const auto height_scale = [font_height](float pixels) {
+        return pixels / static_cast<float>(font_height);
+    };
+    const float scale = height_scale(size);
+    if (!std::isfinite(scale) || scale <= 0) return false;
     const int outline = std::clamp(static_cast<int>(number("outline", 0)), 0, 8);
     const float tracking = number("kerning", 0);
+    const float ruby_tracking = number("rubykerning", 0);
+    const int shadow = std::clamp(static_cast<int>(number("shadow", 0)), 0, 256);
+    // Layout uses the character surface width, including effect padding.
+    // Keep the verified pixel-height raster scale; tracking is in stage pixels.
+    const auto character_advance = [&](int glyph, float glyph_scale, float spacing) {
+        int advance = 0, bearing = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        stbtt_GetGlyphHMetrics(info, glyph, &advance, &bearing);
+        stbtt_GetGlyphBitmapBox(info, glyph, glyph_scale, glyph_scale, &x0, &y0, &x1, &y1);
+        const int natural = std::max(static_cast<int>(std::lround(advance * glyph_scale)),
+                                     std::max(0, x0) + x1 - x0);
+        return static_cast<int>(std::lround(natural + 2 * outline + shadow + spacing));
+    };
     const auto alignment = style.find("align");
     const std::string align = alignment == style.end() ? "left" : alignment->second;
     const auto stroke = style.find("outlinecolor");
@@ -1495,13 +1536,16 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     // captions below their scripted top and inflates every line's spacing.
     stbtt_GetFontVMetricsOS2(info, &ascent, &descent, &linegap);
     const float sascent = ascent * scale;
-    const float sdescent = descent * scale;
     // spacemiddle separates the reserved ruby row from the main glyph row.
     // It is often negative; omitting rubysize makes adjacent lines overlap.
     const float ruby_row = std::max(0.0, number("rubysize", ruby.empty() ? 0 : size/2));
     const float row_top = number("spacetop", 0) + ruby_row + number("spacemiddle", 0);
     const int baseline = static_cast<int>(std::ceil(sascent + row_top)) + outline;
-    const float advance_h = sascent - sdescent + linegap * scale +
+    // A character's layout cell retains the requested height even when
+    // OS/2 typographic metrics are shorter than the CELL sizing metrics.
+    // Effect padding is part of that cell, as it is for horizontal advance.
+    // Keep the verified raster scale and first-line baseline unchanged.
+    const float advance_h = size + 2 * outline + shadow +
         row_top + number("spacebottom", 0);
 
     // UTF-8 → codepoints → glyphs, then two-pass word layout:
@@ -1527,16 +1571,15 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
     glyphs.reserve(cps.size()); advances.reserve(cps.size());
     for (uint32_t cp : cps) {
         const int gi = stbtt_FindGlyphIndex(info, static_cast<int>(cp));
-        int adv = 0, lsb = 0;
-        stbtt_GetGlyphHMetrics(info, gi, &adv, &lsb);
         glyphs.push_back(gi);
-        advances.push_back(static_cast<int>(std::lround(adv * scale + tracking)));
+        advances.push_back(character_advance(gi, scale, tracking));
     }
     if (glyphs.empty()) return false;
     struct RubyGroup { size_t first, last, glyph_first, glyph_last; int base_width, width; };
     std::vector<RubyGroup> ruby_groups;
     const float ruby_size=std::clamp(number("rubysize",size/2),1.0,256.0);
-    const float ruby_scale=stbtt_ScaleForMappingEmToPixels(info,ruby_size);
+    const float ruby_scale=height_scale(ruby_size);
+    if (!std::isfinite(ruby_scale) || ruby_scale <= 0) return false;
     for(const auto& r:ruby) {
         if(r.start>text.size() || r.length>text.size()-r.start || r.text.empty()) continue;
         const size_t first=decode(text.substr(0,r.start)).size();
@@ -1548,10 +1591,9 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
         for(size_t k=first;k<last;++k) base_width+=advances[k];
         const size_t glyph_first=glyphs.size();
         for(uint32_t cp:decode(r.text)) {
-            int gi=stbtt_FindGlyphIndex(info,static_cast<int>(cp)),adv=0,lsb=0;
-            stbtt_GetGlyphHMetrics(info,gi,&adv,&lsb);
+            int gi=stbtt_FindGlyphIndex(info,static_cast<int>(cp));
             cps.push_back(cp); glyphs.push_back(gi);
-            advances.push_back(static_cast<int>(std::lround(adv*ruby_scale)));
+            advances.push_back(character_advance(gi, ruby_scale, ruby_tracking));
             ruby_width+=advances.back();
         }
         const int width=std::max(base_width,ruby_width);

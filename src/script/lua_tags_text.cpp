@@ -101,8 +101,8 @@ bool LuaEngine::TagFontInit(const std::string &tag, TagAttrs &m) {
     if (!compositor_) return false;
     // Reset the current font state only. Per-layer rects registered by
     // earlier chgmsg+font pairs must survive, or every set_textfont
-    // call would wipe the geometry of the layers before it.
-    font_defaults_.clear();
+    // call would wipe the geometry of the layers before it. Declared
+    // fontdefault values remain available after resetting current overrides.
     font_main_.clear();
     font_name_.clear();
     if (!msg_layer_.empty()) font_of_.erase(msg_layer_);
@@ -197,15 +197,18 @@ bool LuaEngine::TagPrint(const std::string &tag, TagAttrs &m) {
     auto& text = page.text;
     text += m["data"];
     if (page.ruby_active) return true;
-    // font resolution: the rect registered for THIS layer via
-    // chgmsg+font pairing wins; otherwise the last visible-area font.
-    auto fo = font_of_.find(msg_layer_);
-    const std::map<std::string, std::string> &fr =
-        fo != font_of_.end()
-            ? fo->second
-            : (msg_layer_.find("name") != std::string::npos
-                   ? font_name_
-                   : font_main_);
+    // A layer's explicit style wins over declared game defaults. For a new
+    // layer, resolve defaults per attribute: a declared size must not borrow
+    // a title's size, while face/color-only defaults retain the visible slot's
+    // unspecified legacy attributes.
+    const auto fo = font_of_.find(msg_layer_);
+    std::map<std::string, std::string> fr = font_defaults_;
+    if (fo != font_of_.end()) {
+        for (const auto& kv : fo->second) fr[kv.first] = kv.second;
+    } else {
+        const auto& visible = msg_layer_.find("name") != std::string::npos ? font_name_ : font_main_;
+        for (const auto& kv : visible) fr.emplace(kv);
+    }
     const float size =
         fr.count("size") ? std::atof(fr.at("size").c_str()) : 40.f;
     if (fr.count("face"))

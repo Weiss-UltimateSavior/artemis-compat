@@ -12,6 +12,7 @@
 #include "render/emote_player.h"
 #include "log/logger.h"
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
@@ -509,6 +510,74 @@ int main(int argc, char** argv) {
     lua.EndFrame();
     Check(lua.DoString("e:setEventHandler{onEnterFrame=''}", "remove filter"),"remove frame filter");
 
+    // Infinite decorative animations keep requesting redraws but are not
+    // script barriers (upstream issue #7). Finite repeats/delays retain their
+    // full duration, including long effects that exceed thirty seconds.
+    {
+        artc::Compositor animations;
+        animations.Init(1280, 720);
+        animations.AddTween("loop", {{"left","0,100"},{"time","1000"},{"yoyo","-1"}}, 1000);
+        Check(std::isinf(animations.PendingAnimationMs(1050)),
+              "infinite yoyo keeps the host redraw gate active");
+        Check(animations.PendingBlockingAnimationMs(1050)==0,
+              "infinite yoyo contributes no script barrier");
+        animations.AddTween("finite", {{"top","0,100"},{"time","60000"},
+                                     {"delay","50"},{"loop","1"}}, 1000);
+        Check(animations.PendingBlockingAnimationMs(1050)==120000,
+              "long finite animation retains delay and repeat duration");
+        const auto revision=animations.Revision();
+        Check(animations.Update(1100) && animations.Revision()>revision,
+              "decorative loop still updates while the script can run");
+        animations.DeleteTweens("finite");
+        Check(animations.PendingBlockingAnimationMs(1100)==0 &&
+              std::isinf(animations.PendingAnimationMs(1100)),
+              "finishing finite work does not stop the decorative loop");
+        animations.AddTween("loop2", {{"left","0,50"},{"time","250"},{"loop","-1"}}, 1100);
+        Check(animations.PendingBlockingAnimationMs(1200)==0,
+              "infinite loop and yoyo use the same nonblocking semantics");
+
+        artc::LuaEngine barriers;
+        Check(barriers.Init(&packs, ini, "android", 1280, 720, &animations),
+              "initialize script with infinite decorative animations");
+        barriers.DispatchTag("wait", {{"scenario","1"},{"input","0"}});
+        Check(!barriers.IsWaiting(), "scenario wait ignores infinite decoration");
+        barriers.DispatchTag("wait", {});
+        Check(!barriers.IsWaiting(), "implicit wait ignores infinite decoration");
+        barriers.DispatchTag("wt", {});
+        Check(!barriers.IsWaiting(), "wt ignores infinite decoration");
+        animations.AddTween("barrier", {{"alpha","255,0"},{"time","60000"}}, barriers.NowMs());
+        barriers.DispatchTag("wait", {{"scenario","1"},{"input","0"}});
+        Check(barriers.IsWaiting(), "scenario wait still blocks on a long finite tween");
+        barriers.SetWaiting(false);
+        barriers.DispatchTag("wt", {});
+        Check(barriers.IsWaiting(), "wt still blocks on a long finite tween");
+        barriers.SetWaiting(false);
+        animations.DeleteTweens("barrier");
+        barriers.DispatchTag("wait", {});
+        Check(!barriers.IsWaiting(), "script resumes once only infinite loops remain");
+    }
+
+    // A negative repeat flag is not itself an infinite duration: zero-time
+    // work executes once after its delay, and that finite delay must block.
+    {
+        artc::Compositor delayed;
+        delayed.Init(1280, 720);
+        delayed.AddTween("delayed", {{"left","0,100"},{"time","0"},
+                                   {"delay","50"},{"yoyo","-1"}}, 1050);
+        Check(delayed.PendingAnimationMs(1050)==50 &&
+              delayed.PendingBlockingAnimationMs(1050)==50,
+              "zero-duration negative-repeat segment retains its finite delay");
+        Check(delayed.PendingBlockingAnimationMs(1075)==25,
+              "finite delayed work retains the remaining deadline");
+        Check(!delayed.Update(1075), "delayed zero-time work has not started early");
+        Check(delayed.Update(1100), "delayed zero-time work executes at its deadline");
+        Check(delayed.PendingAnimationMs(1100)==0 &&
+              delayed.PendingBlockingAnimationMs(1100)==0,
+              "zero-time negative-repeat segment finishes rather than looping");
+        const auto final=delayed.GetLayerInfo("delayed");
+        Check(final.found && final.left==100,
+              "finite delayed segment applies its final property once");
+    }
     artc::AutoReadTimer reading;
     Check(!reading.Ready(0, 100, true), "voice/text blocks the auto timer");
     Check(!reading.Ready(500, 100, false), "reading interval starts after voice/text");

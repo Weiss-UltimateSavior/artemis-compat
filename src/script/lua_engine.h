@@ -185,6 +185,9 @@ public:
     void BeginDrag(float x, float y);
     void DragMove(float x, float y);
     void EndDrag();
+    // Host cancellation needs a current context: dragout can mutate layers.
+    // Clear moved state too, so a later ordinary tap cannot inherit it.
+    void CancelDrag();
     // true while the pointer is down and a draggable layer was grabbed — the
     // following up must not fall through to ClickAt (button activation).
     bool DragActive() const { return !drag_id_.empty(); }

@@ -484,6 +484,26 @@ int main() {
               "queued loads initialize Lua without executing skipped tag bodies");
     }
 
+    // ---- 9) a failed synchronous call leaves its caller intact ----
+    {
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (failed call)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.SetScriptRunner(&runner);
+        Check(runner.Jump("emain.iet", "start"), "load failed-call caller");
+        lua.SetWaiting(true);
+        const auto file = runner.CurrentFile();
+        const auto pc = runner.CurrentIndex();
+        const auto size = runner.Size();
+        Check(!runner.Call("missing.iet", ""), "missing synchronous call reports failure");
+        Check(lua.IsWaiting() && runner.StackFiles().size() == 1 &&
+                  runner.CurrentFile() == file && runner.CurrentIndex() == pc &&
+                  runner.Size() == size,
+              "failed synchronous call preserves the caller cursor, stack and wait");
+    }
+
     fs::remove_all(dir);
     if (g_failures) {
         std::cerr << g_failures << " asb runner regression failure(s)\n";
