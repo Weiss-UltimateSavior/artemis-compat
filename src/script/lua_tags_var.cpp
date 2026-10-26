@@ -154,8 +154,8 @@ bool LuaEngine::TagVarRaw(lua_State *L) {
             lua_pop(L, 1);
             if (lid && compositor_) {
                 const auto info = compositor_->GetLayerInfo(lid);
+                const std::string nm(name);
                 if (info.found) {
-                    const std::string nm(name);
                     // The framework reads <name>.left/.top/.width/.height
                     // (e.g. getTabletPos: e:var("t.ly.left")). Store the
                     // bare name too for older callers.
@@ -170,6 +170,12 @@ bool LuaEngine::TagVarRaw(lua_State *L) {
                                           std::to_string((int)info.left) + " width=" +
                                           std::to_string((int)info.width));
                 }
+                // Transform fields are always refreshed. A missing layer gets
+                // neutral defaults instead of retaining the previous query.
+                vars_[nm + ".xscale"] = std::to_string((int)info.xscale);
+                vars_[nm + ".yscale"] = std::to_string((int)info.yscale);
+                vars_[nm + ".rotate"] = std::to_string((int)info.rotate);
+                vars_[nm + ".alpha"] = std::to_string((int)info.alpha);
             }
         } else {
             auto it = sysvals_.find(sys);

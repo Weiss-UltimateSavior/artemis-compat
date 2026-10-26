@@ -1103,6 +1103,10 @@ Compositor::LayerInfo Compositor::GetLayerInfo(const std::string &id) const {
         info.drag_t = l.drag_t;
         info.drag_r = l.drag_r;
         info.drag_b = l.drag_b;
+        info.xscale = l.sx * 100.0f;
+        info.yscale = l.sy * 100.0f;
+        info.rotate = l.rotate;
+        info.alpha = l.alpha * 255.0f;
     }
     return info;
 }
