@@ -316,6 +316,8 @@ uint64_t AsbRunner::BeginEvent(LuaEngine& lua) {
 
 void AsbRunner::DiscardFlow() {
     callstack_.clear();
+    debug_skip_active_ = false;
+    debug_skip_target_ = 0;
     event_entry_=0;
     event_wait_valid_=false;
     event_lua_=nullptr;
