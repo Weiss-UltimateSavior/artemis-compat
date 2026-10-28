@@ -74,6 +74,9 @@ public:
     // One native instruction. Lua may jump/call/return while the instruction
     // runs; do not retain references into the script or advance its new cursor.
     bool ExecuteLine(LuaEngine& lua);
+    // Replay through transient waits until the saved instruction boundary.
+    void StartDebugSkip(size_t index);
+    bool DebugSkipActive() const { return debug_skip_active_; }
     void JumpTo(const std::string &label);
     // Jump to a compiled instruction index (the ASB branch/goto metadata
     // stores these directly rather than source labels).
@@ -103,6 +106,8 @@ public:
     std::vector<std::string> StackFiles() const;
 
 private:
+    bool ExecuteOneLine(LuaEngine& lua);
+    void FinishDebugSkip(LuaEngine& lua);
     bool Load(const std::vector<uint8_t> &image, const std::string &label);
     void RunLoadTimeLuaChunks();
     bool FindLabel(const std::string &label, size_t *pc);
@@ -116,6 +121,8 @@ private:
 
     AsbScript script_;
     size_t pc_ = 0;
+    bool debug_skip_active_ = false;
+    size_t debug_skip_target_ = 0;
     bool loaded_ = false;
     bool lua_chunks_loaded_ = false;
     // True when pc_ was just set by a [return]/Return(): the instruction there

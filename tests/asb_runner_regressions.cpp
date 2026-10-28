@@ -195,6 +195,10 @@ int main() {
              "[calllua function=\"capture_debug_stack_main\"]\n[stop]\n"},
             {"debug_stack_sub.iet",
              "*sub\n[calllua function=\"capture_debug_stack_sub\"]\n[return]\n"},
+            {"debug_replay.iet",
+             "*start\n[stepDR0]\n[wait time=\"60000\"]\n[stepDR1]\n"
+             "[calllua function=\"capture_debug_replay\"]\n[@]\n"
+             "[calllua function=\"after_debug_replay\"]\n[stop]\n"},
         });
         std::ofstream out(pack_path, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char *>(bytes.data()), (std::streamsize)bytes.size());
@@ -519,7 +523,106 @@ int main() {
         )", "check stack positions"), "caller and active frames expose next instruction indices");
     }
 
-    // ---- 10) a failed synchronous call leaves its caller intact ----
+    // ---- 10) debugSkip replays waits and stops at the saved boundary ----
+    {
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (debug replay)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.SetScriptRunner(&runner);
+        Check(lua.DoString(R"(
+            debug_capture_count = 0
+            debug_finish_count = 0
+            debug_after_count = 0
+            function capture_debug_replay()
+                local stack = e:getScriptStack()
+                debug_target = stack[#stack].index
+                debug_capture_count = debug_capture_count + 1
+            end
+            function finish_debug_replay()
+                debug_finish_count = debug_finish_count + 1
+                debug_finished_before_after = debug_after_count == 0
+            end
+            function after_debug_replay()
+                debug_after_count = debug_after_count + 1
+            end
+            e:setEventHandler{onDebugSkipOut='finish_debug_replay'}
+        )", "debug replay probes"), "install debug replay probes");
+        Check(runner.Jump("debug_replay.iet", "start"), "load debug replay capture flow");
+        bool captured = false;
+        for (int i = 0; i < 8 && !captured; ++i) {
+            runner.ExecuteLine(lua);
+            lua_getglobal(lua.state(), "debug_target");
+            captured = !lua_isnil(lua.state(), -1);
+            lua_pop(lua.state(), 1);
+            if (!captured && lua.IsWaiting()) lua.SetWaiting(false);
+        }
+        Check(captured, "capture a real script position before the click wait");
+        Check(runner.Jump("debug_replay.iet", "start"), "rewind debug replay flow");
+        Check(lua.DoString("e:debugSkip{index=debug_target}", "arm debug replay"),
+              "arm debug replay from Lua");
+        for (int i = 0; i < 6; ++i) {
+            runner.ExecuteLine(lua);
+            if (i == 3) Check(!lua.IsWaiting(), "debug replay crosses its intermediate wait");
+        }
+        Check(lua.DoString(R"(
+            assert(debug_capture_count == 2)
+            assert(debug_finish_count == 1)
+            assert(debug_finished_before_after)
+            assert(debug_after_count == 0)
+        )", "check debug replay boundary"),
+              "replay reaches the saved boundary once without running later story");
+        Check(lua.IsWaiting(), "the saved click wait survives the replay boundary");
+        lua.SetWaiting(false);
+        Run(runner, lua, 4);
+        Check(lua.DoString(R"(
+            assert(debug_after_count == 1)
+            assert(debug_finish_count == 1)
+        )", "continue after debug replay"), "normal execution resumes after the boundary");
+
+        // Repeat through the same wait-gated drive used by the native hosts.
+        Check(lua.DoString(R"(
+            debug_capture_count = 0
+            debug_finish_count = 0
+            debug_after_count = 0
+            debug_finished_before_after = false
+        )", "reset host-driven replay probes"), "reset host-driven replay probes");
+        Check(runner.Jump("debug_replay.iet", "start"), "rewind host-driven replay");
+        Check(lua.DoString("e:debugSkip{index=debug_target}", "arm host-driven replay"),
+              "arm host-driven replay");
+        auto drain = [&]() {
+            while (!lua.IsWaiting() && lua.HasQueuedTag()) {
+                std::string name;
+                std::vector<std::pair<std::string, std::string>> attrs;
+                if (!lua.PopQueuedTag(&name, &attrs)) break;
+                lua.DispatchTag(name, attrs, false);
+            }
+        };
+        for (int frame = 0; frame < 8; ++frame) {
+            drain();
+            if (runner.Loaded() && !runner.Halted() && !lua.IsWaiting()) {
+                for (int steps = 0; steps < 4 && runner.Loaded() && !runner.Halted(); ++steps) {
+                    runner.ExecuteLine(lua);
+                    drain();
+                    if (lua.IsWaiting()) break;
+                }
+            }
+            lua_getglobal(lua.state(), "debug_finish_count");
+            const bool finished = lua_tointeger(lua.state(), -1) == 1;
+            lua_pop(lua.state(), 1);
+            if (finished) break;
+        }
+        Check(lua.DoString(R"(
+            assert(debug_capture_count == 1)
+            assert(debug_finish_count == 1)
+            assert(debug_finished_before_after)
+            assert(debug_after_count == 0)
+        )", "check host-driven replay"), "wait-gated hosts drive replay without stalling");
+        Check(lua.IsWaiting(), "host remains parked at the restored click wait");
+    }
+
+    // ---- 11) a failed synchronous call leaves its caller intact ----
     {
         artc::LuaEngine lua;
         Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (failed call)");

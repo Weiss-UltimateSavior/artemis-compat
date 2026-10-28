@@ -598,7 +598,39 @@ bool EstimateTrue(LuaEngine &lua, const std::string &estimate) {
 }
 } // namespace
 
+void AsbRunner::StartDebugSkip(size_t index) {
+    debug_skip_target_ = index;
+    debug_skip_active_ = index != 0;
+}
+
+void AsbRunner::FinishDebugSkip(LuaEngine& lua) {
+    debug_skip_active_ = false;
+    debug_skip_target_ = 0;
+    // Keep the target wait: NotifyDebugSkipOut suspends it into the event (or
+    // a called cleanup frame), so normal story input stays parked afterwards.
+    lua.NotifyDebugSkipOut();
+}
+
 bool AsbRunner::ExecuteLine(LuaEngine& lua) {
+    if (debug_skip_active_) {
+        if (halted_ || pc_ >= script_.lines.size() ||
+            (pc_ >= debug_skip_target_ && lua.HasWaitState())) {
+            FinishDebugSkip(lua);
+            return false;
+        }
+        // Intermediate waits must not pace a replay. SuspendWait clears every
+        // wait domain without running nested script or announcing a click out.
+        lua.SuspendWait();
+    }
+    const bool result = ExecuteOneLine(lua);
+    if (debug_skip_active_ &&
+        (halted_ || (pc_ >= debug_skip_target_ && lua.HasWaitState()))) {
+        FinishDebugSkip(lua);
+    }
+    return result;
+}
+
+bool AsbRunner::ExecuteOneLine(LuaEngine& lua) {
     if (!loaded_ || halted_ || pc_ >= script_.lines.size()) { halted_ = true; return false; }
     FlagGuard exec_guard(executing_);
     pc_pending_ = false;

@@ -861,7 +861,7 @@ bool LuaEngine::Init(PackManager *packs, const Ini &systemIni,
     } methods[] = {
         {"tag", l_tag}, {"var", l_var}, {"isFileExists", l_isFileExists},
         {"include", l_include}, {"debug", l_debug}, {"now", l_now},
-        {"file", l_file},
+        {"debugSkip", l_debugSkip}, {"file", l_file},
         {"setTagFilter", l_setTagFilter},
         {"setMagicPath", l_setMagicPath},
         {"setUseMultiTouch", l_noop},
@@ -1412,7 +1412,7 @@ int LuaEngine::l_setEventHandler(lua_State *L) {
     LuaEngine *self = Self(L);
     if (!self || !lua_istable(L, 2)) return 0;
     static const char *kNames[] = {"onEnterFrame", "onClickWaitIn", "onClickWaitOut",
-                                   "onSave", "onLoad", "onInputEvent"};
+                                   "onSave", "onLoad", "onInputEvent", "onDebugSkipOut"};
     for (const char *n : kNames) {
         lua_getfield(L, 2, n);
         const char *fn = lua_tostring(L, -1);
@@ -1885,6 +1885,14 @@ bool LuaEngine::CallEvent(const std::string &fn,
     return true;
 }
 
+void LuaEngine::NotifyDebugSkipOut() {
+    const auto it = event_handlers_.find("onDebugSkipOut");
+    if (it == event_handlers_.end() || it->second.empty()) return;
+    const uint64_t token = script_runner_ ? script_runner_->BeginEvent(*this) : 0;
+    CallEvent(it->second, {}, false);
+    if (script_runner_) script_runner_->EndEvent(token);
+}
+
 void LuaEngine::SetAutoMode(bool enabled) {
     if (enabled && !auto_allowed_) return;
     if (auto_enabled_ == enabled) return;
@@ -1984,6 +1992,10 @@ void LuaEngine::SetTimedWait(int ms, bool accept_input) {
 // Polled once per frame: auto-clears an expired timed wait so the runner
 // resumes without user input. Called by the frame loop before stepping.
 bool LuaEngine::IsWaiting() {
+    // Host wait gates and queue drains must keep driving a replay. The runner
+    // uses HasWaitState for its terminal boundary, so this cannot hide the
+    // restored wait once StartDebugSkip's target has been reached.
+    if (script_runner_ && script_runner_->DebugSkipActive()) return false;
     if(!video_wait_.empty()) {
         if(videos_.count(video_wait_)) return true;
         // SetWaiting(false) announces onClickWaitOut first; video_wait_ must
@@ -2340,6 +2352,18 @@ int LuaEngine::l_getScriptBlock(lua_State *L) {
         lua_setfield(L, -2, "file");
     }
     return 1;
+}
+
+int LuaEngine::l_debugSkip(lua_State *L) {
+    LuaEngine* self = Self(L);
+    if (!self || !self->script_runner_ || !lua_istable(L, 2)) return 0;
+    lua_getfield(L, 2, "index");
+    if (lua_isnumber(L, -1)) {
+        const lua_Integer index = lua_tointeger(L, -1);
+        if (index >= 0) self->script_runner_->StartDebugSkip(static_cast<size_t>(index));
+    }
+    lua_pop(L, 1);
+    return 0;
 }
 
 int LuaEngine::l_getScriptStack(lua_State *L) {
