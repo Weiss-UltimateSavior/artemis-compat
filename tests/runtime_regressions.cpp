@@ -628,6 +628,9 @@ int main(int argc, char** argv) {
         {"left", "12"}, {"top", "8"}, {"w", "320"}, {"h", "240"},
         {"xscale", "150"}, {"yscale", "125"}, {"rotate", "30"}, {"alpha", "200"}
     });
+    compositor.SetProps("layer_info_rounding", {
+        {"xscale", "53"}, {"yscale", "105"}, {"rotate", "30.5"}
+    });
     Check(events.DoString(R"(
         e:tag{'var',name='t.ly',system='get_layer_info',style='map',id='layer_info_probe'}
         assert(tonumber(e:var('t.ly')) == 12)
@@ -643,7 +646,15 @@ int main(int argc, char** argv) {
         assert(t.ly.rotate == 30 and t.ly.alpha == 200)
         assert(t.ly.left == 12 and t.ly.top == 8)
         assert(t.ly.width == 320 and t.ly.height == 240)
+        e:tag{'var',name='t.ly',system='get_layer_info',style='map',id='layer_info_rounding'}
+        assert(tonumber(e:var('t.ly.xscale')) == 53)
+        assert(tonumber(e:var('t.ly.yscale')) == 105)
+        assert(tonumber(e:var('t.ly.rotate')) == 31)
+        assert(t.ly.rotate == 30.5)
+        e:tag{'var',name='t.ly',system='get_layer_info',style='map',id='layer_info_probe'}
         e:tag{'var',name='t.ly',system='get_layer_info',style='map',id='layer_info_missing'}
+        assert(t.ly.left == 12 and t.ly.top == 8)
+        assert(t.ly.width == 320 and t.ly.height == 240)
         assert(t.ly.xscale == 100 and t.ly.yscale == 100)
         assert(t.ly.rotate == 0 and t.ly.alpha == 255)
         assert(tonumber(e:var('t.ly.xscale')) == 100)

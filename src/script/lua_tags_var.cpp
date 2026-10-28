@@ -8,6 +8,7 @@
 #include "render/compositor.h"
 #include "log/logger.h"
 #include "util/save_storage.h"
+#include <cmath>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -172,10 +173,10 @@ bool LuaEngine::TagVarRaw(lua_State *L) {
                 }
                 // Transform fields are always refreshed. A missing layer gets
                 // neutral defaults instead of retaining the previous query.
-                vars_[nm + ".xscale"] = std::to_string((int)info.xscale);
-                vars_[nm + ".yscale"] = std::to_string((int)info.yscale);
-                vars_[nm + ".rotate"] = std::to_string((int)info.rotate);
-                vars_[nm + ".alpha"] = std::to_string((int)info.alpha);
+                vars_[nm + ".xscale"] = std::to_string(static_cast<int>(std::lround(info.xscale)));
+                vars_[nm + ".yscale"] = std::to_string(static_cast<int>(std::lround(info.yscale)));
+                vars_[nm + ".rotate"] = std::to_string(static_cast<int>(std::lround(info.rotate)));
+                vars_[nm + ".alpha"] = std::to_string(static_cast<int>(std::lround(info.alpha)));
                 if (field("style") == "map") {
                     // style='map' also exposes a real dotted Lua table for
                     // scripts that read t.ly.xscale directly, rather than
@@ -205,10 +206,12 @@ bool LuaEngine::TagVarRaw(lua_State *L) {
                             lua_pushnumber(L, value);
                             lua_setfield(L, -2, key);
                         };
-                        number("left", info.left);
-                        number("top", info.top);
-                        number("width", info.width);
-                        number("height", info.height);
+                        if (info.found) {
+                            number("left", info.left);
+                            number("top", info.top);
+                            number("width", info.width);
+                            number("height", info.height);
+                        }
                         number("xscale", info.xscale);
                         number("yscale", info.yscale);
                         number("rotate", info.rotate);
