@@ -2347,10 +2347,12 @@ int LuaEngine::l_getScriptStack(lua_State *L) {
     LuaEngine* self = Self(L);
     if (self && self->script_runner_) {
         int i = 1;
-        for (const auto& file : self->script_runner_->StackFiles()) {
+        for (const auto& entry : self->script_runner_->StackEntries()) {
             lua_newtable(L);
-            lua_pushlstring(L, file.data(), file.size());
+            lua_pushlstring(L, entry.file.data(), entry.file.size());
             lua_setfield(L, -2, "file");
+            lua_pushinteger(L, static_cast<lua_Integer>(entry.index));
+            lua_setfield(L, -2, "index");
             lua_rawseti(L, -2, i++);
         }
     }

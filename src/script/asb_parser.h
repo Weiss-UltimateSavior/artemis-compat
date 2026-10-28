@@ -34,6 +34,11 @@ struct AsbScript {
     std::vector<std::pair<std::string, size_t>> labels;      // name → line index
 };
 
+struct AsbStackEntry {
+    std::string file;
+    size_t index = 0;  // next instruction to execute in this frame
+};
+
 // Parses a full .asb image. Returns false on structural mismatch.
 bool ParseAsb(const std::vector<uint8_t> &data, AsbScript *out);
 
@@ -94,6 +99,7 @@ public:
     uint64_t BeginEvent(LuaEngine& lua);
     void EndEvent(uint64_t token);
     void ShiftWaitDeadlines(LuaEngine& lua, std::chrono::steady_clock::duration pause);
+    std::vector<AsbStackEntry> StackEntries() const;
     std::vector<std::string> StackFiles() const;
 
 private:

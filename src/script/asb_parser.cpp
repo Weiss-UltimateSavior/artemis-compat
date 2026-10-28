@@ -505,10 +505,21 @@ void AsbRunner::EndEvent(uint64_t token) {
     event_entry_ = 0;
 }
 
+std::vector<AsbStackEntry> AsbRunner::StackEntries() const {
+    std::vector<AsbStackEntry> entries;
+    for (const auto& frame : callstack_) entries.push_back({frame.file, frame.pc});
+    if (loaded_) {
+        // ExecuteLine advances after the callback returns. While that callback
+        // inspects the stack, the saved position is still the following line.
+        const size_t next = pc_ + (executing_ && pc_ < script_.lines.size() ? 1 : 0);
+        entries.push_back({current_file_, next});
+    }
+    return entries;
+}
+
 std::vector<std::string> AsbRunner::StackFiles() const {
     std::vector<std::string> files;
-    for (const auto& frame : callstack_) files.push_back(frame.file);
-    if (loaded_) files.push_back(current_file_);
+    for (const auto& entry : StackEntries()) files.push_back(entry.file);
     return files;
 }
 

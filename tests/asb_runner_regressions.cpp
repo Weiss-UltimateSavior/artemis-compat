@@ -190,6 +190,11 @@ int main() {
              "[stepQueueInit]\n[return]\n"},
             {"queue_after.iet",
              "*entry\n[calllua function=\"queue_ready\"]\n[stepQueueAfter]\n[stop]\n"},
+            {"debug_stack_main.iet",
+             "*start\n[stepDS0]\n[call file=\"debug_stack_sub.iet\" label=\"sub\"]\n"
+             "[calllua function=\"capture_debug_stack_main\"]\n[stop]\n"},
+            {"debug_stack_sub.iet",
+             "*sub\n[calllua function=\"capture_debug_stack_sub\"]\n[return]\n"},
         });
         std::ofstream out(pack_path, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char *>(bytes.data()), (std::streamsize)bytes.size());
@@ -484,7 +489,37 @@ int main() {
               "queued loads initialize Lua without executing skipped tag bodies");
     }
 
-    // ---- 9) a failed synchronous call leaves its caller intact ----
+    // ---- 9) script stack exposes each frame's next instruction ----
+    {
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (stack positions)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.SetScriptRunner(&runner);
+        Check(lua.DoString(R"(
+            function capture_debug_stack_sub()
+                debug_stack_sub = e:getScriptStack()
+            end
+            function capture_debug_stack_main()
+                debug_stack_main = e:getScriptStack()
+            end
+        )", "stack position probes"), "install stack position probes");
+        Check(runner.Jump("debug_stack_main.iet", "start"), "load stack position flow");
+        Run(runner, lua, 20);
+        Check(lua.DoString(R"(
+            assert(#debug_stack_sub == 2)
+            assert(debug_stack_sub[1].file == 'debug_stack_main.iet')
+            assert(debug_stack_sub[1].index == 3)
+            assert(debug_stack_sub[2].file == 'debug_stack_sub.iet')
+            assert(debug_stack_sub[2].index == 2)
+            assert(#debug_stack_main == 1)
+            assert(debug_stack_main[1].file == 'debug_stack_main.iet')
+            assert(debug_stack_main[1].index == 4)
+        )", "check stack positions"), "caller and active frames expose next instruction indices");
+    }
+
+    // ---- 10) a failed synchronous call leaves its caller intact ----
     {
         artc::LuaEngine lua;
         Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (failed call)");
