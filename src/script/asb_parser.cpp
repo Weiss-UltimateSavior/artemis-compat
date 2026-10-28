@@ -545,6 +545,12 @@ void AsbRunner::JumpTo(const std::string &label) {
     // after an earlier [return] halted it — see AsbRunner::Jump's cache path).
     halted_ = false;
     pc_pending_ = false;
+    // [script file=...] without a label starts the file over. Keep the parsed
+    // image (and its one-shot Lua initialization), but not the old cursor.
+    if (label.empty()) {
+        pc_ = 0;
+        return;
+    }
     if (std::getenv("ARTC_JUMP_TRACE"))
         Log(kLogInfo, "asb-jumpto: " + label + " pc=" + std::to_string(pc_));
     size_t pc = 0;

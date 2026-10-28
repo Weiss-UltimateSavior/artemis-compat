@@ -443,6 +443,28 @@ int main() {
         Check(!trace.has("script not found in packs: "), "no missing-script read");
     }
 
+    // ---- 6b) same-file jump without a label rewinds to the first instruction ----
+    {
+        Trace trace;
+        artc::SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (same-file rewind)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        Check(runner.Jump("same.iet", "start"), "load same-file rewind fixture");
+        runner.ExecuteLine(lua);
+        runner.ExecuteLine(lua);
+        Check(runner.CurrentIndex() > 0, "move away from the file start before rewind");
+        Check(runner.Jump("same.iet", ""), "same-file empty-label jump accepted");
+        Check(runner.CurrentIndex() == 0 && !runner.Halted(),
+              "same-file empty-label jump rewinds instead of preserving the cursor");
+        Run(runner, lua);
+        artc::SetLogSink(nullptr);
+        Check(OnlyStepsWithPrefix(trace.steps(), "step") ==
+                  std::vector<std::string>{"stepS1", "stepS2"},
+              "rewound script replays the real control flow without dead code");
+    }
+
     // ---- 7) text script load executes all top-level Lua initialization ----
     {
         Trace trace;
@@ -462,6 +484,11 @@ int main() {
         Run(runner, lua);
         Check(lua.DoString("assert(lua_init_count == 1)", "initializer count after traversal"),
               "normal traversal does not execute load-time Lua again");
+        Check(runner.Jump("luaent.iet", ""), "rewind load-time Lua fixture without a label");
+        Check(runner.CurrentIndex() == 0, "empty-label rewind starts at the first instruction");
+        Run(runner, lua);
+        Check(lua.DoString("assert(lua_init_count == 1)", "initializer count after empty-label rewind"),
+              "empty-label rewind does not rerun load-time Lua");
         artc::SetLogSink(nullptr);
         Check(trace.has("luaDef") && trace.has("stepLU"),
               "load-time Lua definitions run before the entry-label flow");
