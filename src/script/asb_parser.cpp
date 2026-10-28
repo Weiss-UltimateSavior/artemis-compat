@@ -613,21 +613,46 @@ void AsbRunner::FinishDebugSkip(LuaEngine& lua) {
     lua.NotifyDebugSkipOut();
 }
 
+bool AsbRunner::DrainDebugSkipTag(LuaEngine& lua) {
+    if (!lua.HasQueuedTag()) return false;
+    std::string name;
+    std::vector<std::pair<std::string, std::string>> attrs;
+    if (!lua.PopQueuedTag(&name, &attrs)) return false;
+    if (name == "jump" || name == "call") {
+        std::string file, label;
+        for (const auto& kv : attrs) {
+            if (kv.first == "file") file = kv.second;
+            else if (kv.first == "label") label = kv.second;
+        }
+        if (name == "call") Call(file, label);
+        else Jump(file, label);
+    } else {
+        lua.DispatchTag(name, attrs, false);
+    }
+    return true;
+}
+
 bool AsbRunner::ExecuteLine(LuaEngine& lua) {
-    if (debug_skip_active_) {
+    if (!debug_skip_active_) return ExecuteOneLine(lua);
+    bool result = false;
+    // Bound both native instructions and queued actions so a malformed loop
+    // cannot trap the host in this call. An unfinished replay resumes next frame.
+    for (size_t step = 0; debug_skip_active_ && step < 4096; ++step) {
         if (halted_ || pc_ >= script_.lines.size() ||
             (pc_ >= debug_skip_target_ && lua.HasWaitState())) {
             FinishDebugSkip(lua);
-            return false;
+            break;
         }
+        if (DrainDebugSkipTag(lua)) continue;
         // Intermediate waits must not pace a replay. SuspendWait clears every
         // wait domain without running nested script or announcing a click out.
         lua.SuspendWait();
-    }
-    const bool result = ExecuteOneLine(lua);
-    if (debug_skip_active_ &&
-        (halted_ || (pc_ >= debug_skip_target_ && lua.HasWaitState()))) {
-        FinishDebugSkip(lua);
+        result = ExecuteOneLine(lua);
+        if (debug_skip_active_ &&
+            (halted_ || (pc_ >= debug_skip_target_ && lua.HasWaitState()))) {
+            FinishDebugSkip(lua);
+            break;
+        }
     }
     return result;
 }

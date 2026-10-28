@@ -71,8 +71,9 @@ public:
     size_t Size() const { return script_.lines.size(); }
     const std::string &CurrentFile() const { return current_file_; }
     void Advance() { if (++pc_ >= script_.lines.size()) halted_ = true; }
-    // One native instruction. Lua may jump/call/return while the instruction
-    // runs; do not retain references into the script or advance its new cursor.
+    // One native instruction normally; a bounded burst during debug replay.
+    // Lua may jump/call/return while an instruction runs; do not retain
+    // references into the script or advance its new cursor.
     bool ExecuteLine(LuaEngine& lua);
     // Replay through transient waits until the saved instruction boundary.
     void StartDebugSkip(size_t index);
@@ -107,6 +108,7 @@ public:
 
 private:
     bool ExecuteOneLine(LuaEngine& lua);
+    bool DrainDebugSkipTag(LuaEngine& lua);
     void FinishDebugSkip(LuaEngine& lua);
     bool Load(const std::vector<uint8_t> &image, const std::string &label);
     void RunLoadTimeLuaChunks();
