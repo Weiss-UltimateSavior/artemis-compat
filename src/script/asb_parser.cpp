@@ -316,6 +316,8 @@ uint64_t AsbRunner::BeginEvent(LuaEngine& lua) {
 
 void AsbRunner::DiscardFlow() {
     callstack_.clear();
+    debug_skip_active_ = false;
+    debug_skip_target_ = 0;
     event_entry_=0;
     event_wait_valid_=false;
     event_lua_=nullptr;
@@ -505,10 +507,21 @@ void AsbRunner::EndEvent(uint64_t token) {
     event_entry_ = 0;
 }
 
+std::vector<AsbStackEntry> AsbRunner::StackEntries() const {
+    std::vector<AsbStackEntry> entries;
+    for (const auto& frame : callstack_) entries.push_back({frame.file, frame.pc});
+    if (loaded_) {
+        // ExecuteLine advances after the callback returns. While that callback
+        // inspects the stack, the saved position is still the following line.
+        const size_t next = pc_ + (executing_ && pc_ < script_.lines.size() ? 1 : 0);
+        entries.push_back({current_file_, next});
+    }
+    return entries;
+}
+
 std::vector<std::string> AsbRunner::StackFiles() const {
     std::vector<std::string> files;
-    for (const auto& frame : callstack_) files.push_back(frame.file);
-    if (loaded_) files.push_back(current_file_);
+    for (const auto& entry : StackEntries()) files.push_back(entry.file);
     return files;
 }
 
@@ -532,6 +545,12 @@ void AsbRunner::JumpTo(const std::string &label) {
     // after an earlier [return] halted it — see AsbRunner::Jump's cache path).
     halted_ = false;
     pc_pending_ = false;
+    // [script file=...] without a label starts the file over. Keep the parsed
+    // image (and its one-shot Lua initialization), but not the old cursor.
+    if (label.empty()) {
+        pc_ = 0;
+        return;
+    }
     if (std::getenv("ARTC_JUMP_TRACE"))
         Log(kLogInfo, "asb-jumpto: " + label + " pc=" + std::to_string(pc_));
     size_t pc = 0;
@@ -587,7 +606,64 @@ bool EstimateTrue(LuaEngine &lua, const std::string &estimate) {
 }
 } // namespace
 
+void AsbRunner::StartDebugSkip(size_t index) {
+    debug_skip_target_ = index;
+    debug_skip_active_ = index != 0;
+}
+
+void AsbRunner::FinishDebugSkip(LuaEngine& lua) {
+    debug_skip_active_ = false;
+    debug_skip_target_ = 0;
+    // Keep the target wait: NotifyDebugSkipOut suspends it into the event (or
+    // a called cleanup frame), so normal story input stays parked afterwards.
+    lua.NotifyDebugSkipOut();
+}
+
+bool AsbRunner::DrainDebugSkipTag(LuaEngine& lua) {
+    if (!lua.HasQueuedTag()) return false;
+    std::string name;
+    std::vector<std::pair<std::string, std::string>> attrs;
+    if (!lua.PopQueuedTag(&name, &attrs)) return false;
+    if (name == "jump" || name == "call") {
+        std::string file, label;
+        for (const auto& kv : attrs) {
+            if (kv.first == "file") file = kv.second;
+            else if (kv.first == "label") label = kv.second;
+        }
+        if (name == "call") Call(file, label);
+        else Jump(file, label);
+    } else {
+        lua.DispatchTag(name, attrs, false);
+    }
+    return true;
+}
+
 bool AsbRunner::ExecuteLine(LuaEngine& lua) {
+    if (!debug_skip_active_) return ExecuteOneLine(lua);
+    bool result = false;
+    // Bound both native instructions and queued actions so a malformed loop
+    // cannot trap the host in this call. An unfinished replay resumes next frame.
+    for (size_t step = 0; debug_skip_active_ && step < 4096; ++step) {
+        if (halted_ || pc_ >= script_.lines.size() ||
+            (pc_ >= debug_skip_target_ && lua.HasWaitState())) {
+            FinishDebugSkip(lua);
+            break;
+        }
+        if (DrainDebugSkipTag(lua)) continue;
+        // Intermediate waits must not pace a replay. SuspendWait clears every
+        // wait domain without running nested script or announcing a click out.
+        lua.SuspendWait();
+        result = ExecuteOneLine(lua);
+        if (debug_skip_active_ &&
+            (halted_ || (pc_ >= debug_skip_target_ && lua.HasWaitState()))) {
+            FinishDebugSkip(lua);
+            break;
+        }
+    }
+    return result;
+}
+
+bool AsbRunner::ExecuteOneLine(LuaEngine& lua) {
     if (!loaded_ || halted_ || pc_ >= script_.lines.size()) { halted_ = true; return false; }
     FlagGuard exec_guard(executing_);
     pc_pending_ = false;

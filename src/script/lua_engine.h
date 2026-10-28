@@ -207,7 +207,11 @@ public:
     void AnnounceWaitState(bool in_wait);
     void SetTimedWait(int ms, bool accept_input = false);
     bool IsWaiting();
+    // Raw boundary query for the runner; unlike IsWaiting it does not expire
+    // waits or suppress them while a debug replay is active.
+    bool HasWaitState() const { return waiting_; }
     void NotifyScriptStop() { if (auto_stop_stop_) SetAutoMode(false); }
+    void NotifyDebugSkipOut();
     // A layer/key handler executes above the interrupted script. Suspend its
     // wait without emitting a click-wait exit; restore it when the handler returns.
     struct WaitState {
@@ -410,6 +414,7 @@ private:
     bool PushGlobalFn(const std::string &fn, bool quiet);
     void FireOnPush(int key);   // press dispatch → registered setonpush handler
     static int l_debug(lua_State *L);
+    static int l_debugSkip(lua_State *L);
     static int l_now(lua_State *L);
     static int l_noop(lua_State *L);
     static int l_index(lua_State *L);         // __index → logging stub closure

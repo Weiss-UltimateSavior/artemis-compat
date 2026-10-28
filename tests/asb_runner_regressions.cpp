@@ -141,6 +141,11 @@ int main() {
     fs::remove_all(dir);
     fs::create_directories(dir);
     const std::string pack_path = (dir / "root.pfs").string();
+    std::string debug_long_script =
+        "*start\n[calllua function=\"queue_debug_long_jump\"]\n"
+        "[calllua function=\"wrong_debug_long\"]\n*target\n";
+    for (int i = 0; i < 10; ++i) debug_long_script += "[stepDL]\n";
+    debug_long_script += "[@]\n[calllua function=\"after_debug_long\"]\n[stop]\n";
     {
         std::vector<uint8_t> bytes = BuildPack({
             {"system.ini", "[ANDROID]\nWIDTH=1280\nHEIGHT=720\n"},
@@ -190,6 +195,19 @@ int main() {
              "[stepQueueInit]\n[return]\n"},
             {"queue_after.iet",
              "*entry\n[calllua function=\"queue_ready\"]\n[stepQueueAfter]\n[stop]\n"},
+            {"debug_stack_main.iet",
+             "*start\n[stepDS0]\n[call file=\"debug_stack_sub.iet\" label=\"sub\"]\n"
+             "[calllua function=\"capture_debug_stack_main\"]\n[stop]\n"},
+            {"debug_stack_sub.iet",
+             "*sub\n[calllua function=\"capture_debug_stack_sub\"]\n[return]\n"},
+            {"debug_replay.iet",
+             "*start\n[stepDR0]\n[wait time=\"60000\"]\n[stepDR1]\n"
+             "[calllua function=\"capture_debug_replay\"]\n[@]\n"
+             "[calllua function=\"after_debug_replay\"]\n[stop]\n"},
+            {"debug_cleanup.iet",
+             "*finish\n[calllua function=\"cleanup_debug_replay\"]\n[return]\n"},
+            {"debug_long.iet", debug_long_script},
+            {"debug_loop.iet", "*start\n[jump label=\"start\"]\n"},
         });
         std::ofstream out(pack_path, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char *>(bytes.data()), (std::streamsize)bytes.size());
@@ -425,6 +443,28 @@ int main() {
         Check(!trace.has("script not found in packs: "), "no missing-script read");
     }
 
+    // ---- 6b) same-file jump without a label rewinds to the first instruction ----
+    {
+        Trace trace;
+        artc::SetLogSink([&trace](int, const std::string &m) { trace.lines.push_back(m); });
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (same-file rewind)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        Check(runner.Jump("same.iet", "start"), "load same-file rewind fixture");
+        runner.ExecuteLine(lua);
+        runner.ExecuteLine(lua);
+        Check(runner.CurrentIndex() > 0, "move away from the file start before rewind");
+        Check(runner.Jump("same.iet", ""), "same-file empty-label jump accepted");
+        Check(runner.CurrentIndex() == 0 && !runner.Halted(),
+              "same-file empty-label jump rewinds instead of preserving the cursor");
+        Run(runner, lua);
+        artc::SetLogSink(nullptr);
+        Check(OnlyStepsWithPrefix(trace.steps(), "step") ==
+                  std::vector<std::string>{"stepS1", "stepS2"},
+              "rewound script replays the real control flow without dead code");
+    }
+
     // ---- 7) text script load executes all top-level Lua initialization ----
     {
         Trace trace;
@@ -444,6 +484,11 @@ int main() {
         Run(runner, lua);
         Check(lua.DoString("assert(lua_init_count == 1)", "initializer count after traversal"),
               "normal traversal does not execute load-time Lua again");
+        Check(runner.Jump("luaent.iet", ""), "rewind load-time Lua fixture without a label");
+        Check(runner.CurrentIndex() == 0, "empty-label rewind starts at the first instruction");
+        Run(runner, lua);
+        Check(lua.DoString("assert(lua_init_count == 1)", "initializer count after empty-label rewind"),
+              "empty-label rewind does not rerun load-time Lua");
         artc::SetLogSink(nullptr);
         Check(trace.has("luaDef") && trace.has("stepLU"),
               "load-time Lua definitions run before the entry-label flow");
@@ -484,7 +529,281 @@ int main() {
               "queued loads initialize Lua without executing skipped tag bodies");
     }
 
-    // ---- 9) a failed synchronous call leaves its caller intact ----
+    // ---- 9) script stack exposes each frame's next instruction ----
+    {
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (stack positions)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.SetScriptRunner(&runner);
+        Check(lua.DoString(R"(
+            function capture_debug_stack_sub()
+                debug_stack_sub = e:getScriptStack()
+            end
+            function capture_debug_stack_main()
+                debug_stack_main = e:getScriptStack()
+            end
+        )", "stack position probes"), "install stack position probes");
+        Check(runner.Jump("debug_stack_main.iet", "start"), "load stack position flow");
+        Run(runner, lua, 20);
+        Check(lua.DoString(R"(
+            assert(#debug_stack_sub == 2)
+            assert(debug_stack_sub[1].file == 'debug_stack_main.iet')
+            assert(debug_stack_sub[1].index == 3)
+            assert(debug_stack_sub[2].file == 'debug_stack_sub.iet')
+            assert(debug_stack_sub[2].index == 2)
+            assert(#debug_stack_main == 1)
+            assert(debug_stack_main[1].file == 'debug_stack_main.iet')
+            assert(debug_stack_main[1].index == 4)
+        )", "check stack positions"), "caller and active frames expose next instruction indices");
+    }
+
+    // ---- 10) debugSkip replays waits and stops at the saved boundary ----
+    {
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (debug replay)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.SetScriptRunner(&runner);
+        Check(lua.DoString(R"(
+            debug_capture_count = 0
+            debug_finish_count = 0
+            debug_after_count = 0
+            function capture_debug_replay()
+                local stack = e:getScriptStack()
+                debug_target = stack[#stack].index
+                debug_capture_count = debug_capture_count + 1
+            end
+            function finish_debug_replay()
+                debug_finish_count = debug_finish_count + 1
+                debug_finished_before_after = debug_after_count == 0
+            end
+            function after_debug_replay()
+                debug_after_count = debug_after_count + 1
+            end
+            e:setEventHandler{onDebugSkipOut='finish_debug_replay'}
+        )", "debug replay probes"), "install debug replay probes");
+        Check(runner.Jump("debug_replay.iet", "start"), "load debug replay capture flow");
+        bool captured = false;
+        for (int i = 0; i < 8 && !captured; ++i) {
+            runner.ExecuteLine(lua);
+            lua_getglobal(lua.state(), "debug_target");
+            captured = !lua_isnil(lua.state(), -1);
+            lua_pop(lua.state(), 1);
+            if (!captured && lua.IsWaiting()) lua.SetWaiting(false);
+        }
+        Check(captured, "capture a real script position before the click wait");
+        Check(runner.Jump("debug_replay.iet", "start"), "rewind debug replay flow");
+        Check(lua.DoString("e:debugSkip{index=debug_target}", "arm debug replay"),
+              "arm debug replay from Lua");
+        for (int i = 0; i < 6 && runner.DebugSkipActive(); ++i) {
+            runner.ExecuteLine(lua);
+            if (i == 3) Check(!lua.IsWaiting(), "debug replay crosses its intermediate wait");
+        }
+        Check(lua.DoString(R"(
+            assert(debug_capture_count == 2)
+            assert(debug_finish_count == 1)
+            assert(debug_finished_before_after)
+            assert(debug_after_count == 0)
+        )", "check debug replay boundary"),
+              "replay reaches the saved boundary once without running later story");
+        Check(lua.IsWaiting(), "the saved click wait survives the replay boundary");
+        lua.SetWaiting(false);
+        Run(runner, lua, 4);
+        Check(lua.DoString(R"(
+            assert(debug_after_count == 1)
+            assert(debug_finish_count == 1)
+        )", "continue after debug replay"), "normal execution resumes after the boundary");
+
+        // Repeat through the same wait-gated drive used by the native hosts.
+        Check(lua.DoString(R"(
+            debug_capture_count = 0
+            debug_finish_count = 0
+            debug_after_count = 0
+            debug_finished_before_after = false
+        )", "reset host-driven replay probes"), "reset host-driven replay probes");
+        Check(runner.Jump("debug_replay.iet", "start"), "rewind host-driven replay");
+        Check(lua.DoString("e:debugSkip{index=debug_target}", "arm host-driven replay"),
+              "arm host-driven replay");
+        auto drain = [&]() {
+            while (!lua.IsWaiting() && lua.HasQueuedTag()) {
+                std::string name;
+                std::vector<std::pair<std::string, std::string>> attrs;
+                if (!lua.PopQueuedTag(&name, &attrs)) break;
+                lua.DispatchTag(name, attrs, false);
+            }
+        };
+        for (int frame = 0; frame < 8; ++frame) {
+            drain();
+            if (runner.Loaded() && !runner.Halted() && !lua.IsWaiting()) {
+                for (int steps = 0; steps < 4 && runner.Loaded() && !runner.Halted(); ++steps) {
+                    runner.ExecuteLine(lua);
+                    drain();
+                    if (lua.IsWaiting()) break;
+                }
+            }
+            lua_getglobal(lua.state(), "debug_finish_count");
+            const bool finished = lua_tointeger(lua.state(), -1) == 1;
+            lua_pop(lua.state(), 1);
+            if (finished) break;
+        }
+        Check(lua.DoString(R"(
+            assert(debug_capture_count == 1)
+            assert(debug_finish_count == 1)
+            assert(debug_finished_before_after)
+            assert(debug_after_count == 0)
+        )", "check host-driven replay"), "wait-gated hosts drive replay without stalling");
+        Check(lua.IsWaiting(), "host remains parked at the restored click wait");
+        Check(lua.DoString("e:debugSkip{index=99999}", "arm discarded replay"),
+              "arm replay before discarding the flow");
+        Check(runner.DebugSkipActive(), "large target starts a stop-bound replay");
+        runner.DiscardFlow();
+        Check(!runner.DebugSkipActive(), "discarding a flow cancels its replay state");
+    }
+
+    // ---- 11) debugSkip cleanup calls preserve and restore the target wait ----
+    {
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (debug cleanup)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.SetScriptRunner(&runner);
+        lua.SetCallHandler([&](const std::string& file, const std::string& label) {
+            runner.Call(file, label);
+        });
+        Check(lua.DoString(R"(
+            debug_finish_count = 0
+            debug_cleanup_count = 0
+            debug_after_count = 0
+            function capture_debug_replay() end
+            function finish_debug_replay(e)
+                debug_finish_count = debug_finish_count + 1
+                e:tag{'call', file='debug_cleanup.iet', label='finish'}
+            end
+            function cleanup_debug_replay()
+                debug_cleanup_count = debug_cleanup_count + 1
+            end
+            function after_debug_replay()
+                debug_after_count = debug_after_count + 1
+            end
+            e:setEventHandler{onDebugSkipOut='finish_debug_replay'}
+        )", "debug cleanup probes"), "install debug cleanup probes");
+        Check(runner.Jump("debug_replay.iet", "start"), "load debug cleanup flow");
+        Check(lua.DoString("e:debugSkip{index=5}", "arm debug cleanup"),
+              "arm debug cleanup replay");
+        for (int i = 0; i < 9; ++i) {
+            lua_getglobal(lua.state(), "debug_cleanup_count");
+            const bool cleaned = lua_tointeger(lua.state(), -1) == 1;
+            lua_pop(lua.state(), 1);
+            if (cleaned && lua.IsWaiting()) break;
+            runner.ExecuteLine(lua);
+        }
+        Check(lua.DoString(R"(
+            assert(debug_finish_count == 1)
+            assert(debug_cleanup_count == 1)
+            assert(debug_after_count == 0)
+        )", "check debug cleanup calls"), "cleanup call runs once before later story");
+        Check(runner.CurrentFile() == "debug_replay.iet" && runner.CurrentIndex() == 6 &&
+                  runner.StackFiles().size() == 1 && !runner.DebugSkipActive(),
+              "cleanup return restores the story frame");
+        Check(lua.IsWaiting(), "cleanup return restores the target click wait");
+        lua.SetWaiting(false);
+        Run(runner, lua, 4);
+        Check(lua.DoString("assert(debug_after_count == 1)", "continue after debug cleanup"),
+              "story continues after cleanup returns");
+    }
+
+    // ---- 12) a large debugSkip target ends at the script stop boundary ----
+    {
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (stop-bound replay)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.SetScriptRunner(&runner);
+        Check(lua.DoString(R"(
+            debug_capture_count = 0
+            debug_finish_count = 0
+            debug_after_count = 0
+            function capture_debug_replay() debug_capture_count = debug_capture_count + 1 end
+            function finish_debug_replay() debug_finish_count = debug_finish_count + 1 end
+            function after_debug_replay() debug_after_count = debug_after_count + 1 end
+            e:setEventHandler{onDebugSkipOut='finish_debug_replay'}
+        )", "stop-bound replay probes"), "install stop-bound replay probes");
+        Check(runner.Jump("debug_replay.iet", "start"), "load stop-bound replay flow");
+        Check(lua.DoString("e:debugSkip{index=99999}", "arm stop-bound replay"),
+              "arm stop-bound replay");
+        for (int i = 0; i < 8; ++i) runner.ExecuteLine(lua);
+        Check(lua.DoString(R"(
+            assert(debug_capture_count == 1)
+            assert(debug_after_count == 1)
+            assert(debug_finish_count == 1)
+        )", "check stop-bound replay"), "large target replays through the script stop once");
+        Check(runner.Halted() && !runner.DebugSkipActive(),
+              "stop boundary halts the runner and clears replay state");
+    }
+
+    // ---- 13) a debug replay burst drains queued control flow in order ----
+    {
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (long debug replay)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.SetScriptRunner(&runner);
+        Check(lua.DoString(R"(
+            debug_finish_count = 0
+            debug_wrong_count = 0
+            debug_after_count = 0
+            function queue_debug_long_jump() e:enqueueTag{'jump', label='target'} end
+            function wrong_debug_long() debug_wrong_count = debug_wrong_count + 1 end
+            function finish_debug_long() debug_finish_count = debug_finish_count + 1 end
+            function after_debug_long() debug_after_count = debug_after_count + 1 end
+            e:setEventHandler{onDebugSkipOut='finish_debug_long'}
+        )", "long debug replay probes"), "install long debug replay probes");
+        Check(runner.Jump("debug_long.iet", "start"), "load long debug replay flow");
+        Check(lua.DoString("e:debugSkip{index=14}", "arm long debug replay"),
+              "arm long debug replay");
+        runner.ExecuteLine(lua);
+        Check(lua.DoString(R"(
+            assert(debug_finish_count == 1)
+            assert(debug_wrong_count == 0)
+            assert(debug_after_count == 0)
+        )", "check long debug replay"),
+              "one bounded replay burst reaches the target without executing the wrong branch");
+        Check(!lua.HasQueuedTag() && !runner.DebugSkipActive(),
+              "replay burst drains queued control flow and clears its state");
+        Check(lua.IsWaiting(), "long replay stops at the target click wait");
+    }
+
+    // ---- 14) a cyclic replay returns control at its action budget ----
+    {
+        artc::LuaEngine lua;
+        Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (cyclic replay)");
+        artc::AsbRunner runner;
+        runner.SetPackSource(&packs);
+        runner.SetLuaEngine(&lua);
+        lua.SetScriptRunner(&runner);
+        Check(lua.DoString(R"(
+            debug_finish_count = 0
+            function finish_debug_loop() debug_finish_count = debug_finish_count + 1 end
+            e:setEventHandler{onDebugSkipOut='finish_debug_loop'}
+        )", "cyclic replay probes"), "install cyclic replay probes");
+        Check(runner.Jump("debug_loop.iet", "start"), "load cyclic replay flow");
+        Check(lua.DoString("e:debugSkip{index=99999}", "arm cyclic replay"),
+              "arm cyclic replay");
+        runner.ExecuteLine(lua);
+        Check(runner.DebugSkipActive(), "cyclic replay yields while still unfinished");
+        Check(lua.DoString("assert(debug_finish_count == 0)", "check cyclic replay"),
+              "cyclic replay does not emit a false completion");
+        runner.DiscardFlow();
+        Check(!runner.DebugSkipActive(), "cyclic replay can be discarded after yielding");
+    }
+
+    // ---- 15) a failed synchronous call leaves its caller intact ----
     {
         artc::LuaEngine lua;
         Check(lua.Init(&packs, ini, "android", 1280, 720), "lua init (failed call)");
