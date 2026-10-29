@@ -250,6 +250,9 @@ public:
         bool draggable = false;
         bool has_dragarea = false;
         float drag_l = 0, drag_t = 0, drag_r = 0, drag_b = 0;
+        float xscale = 100, yscale = 100;  // stored local scale, percent
+        float rotate = 0;                  // stored local rotation, degrees
+        float alpha = 255;                 // stored local opacity, 0-255
     };
     LayerInfo GetLayerInfo(const std::string &id) const;
 
