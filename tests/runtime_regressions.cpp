@@ -624,6 +624,49 @@ int main(int argc, char** argv) {
     // Separate Lua instance avoids depending on game-global button tables.
     artc::LuaEngine events;
     Check(events.Init(&packs, ini, "android", 1280, 720, &compositor), "event engine init");
+    compositor.SetProps("layer_info_probe", {
+        {"left", "12"}, {"top", "8"}, {"w", "320"}, {"h", "240"},
+        {"xscale", "150"}, {"yscale", "125"}, {"rotate", "30"}, {"alpha", "200"}
+    });
+    compositor.SetProps("layer_info_rounding", {
+        {"xscale", "53"}, {"yscale", "105"}, {"rotate", "30.5"}
+    });
+    Check(events.DoString(R"(
+        e:tag{'var',name='t.ly',system='get_layer_info',style='map',id='layer_info_probe'}
+        assert(tonumber(e:var('t.ly')) == 12)
+        assert(tonumber(e:var('t.ly.left')) == 12)
+        assert(tonumber(e:var('t.ly.top')) == 8)
+        assert(tonumber(e:var('t.ly.width')) == 320)
+        assert(tonumber(e:var('t.ly.height')) == 240)
+        assert(tonumber(e:var('t.ly.xscale')) == 150)
+        assert(tonumber(e:var('t.ly.yscale')) == 125)
+        assert(tonumber(e:var('t.ly.rotate')) == 30)
+        assert(tonumber(e:var('t.ly.alpha')) == 200)
+        assert(t.ly.xscale == 150 and t.ly.yscale == 125)
+        assert(t.ly.rotate == 30 and t.ly.alpha == 200)
+        assert(t.ly.left == 12 and t.ly.top == 8)
+        assert(t.ly.width == 320 and t.ly.height == 240)
+        e:tag{'var',name='t.ly',system='get_layer_info',style='map',id='layer_info_rounding'}
+        assert(tonumber(e:var('t.ly.xscale')) == 53)
+        assert(tonumber(e:var('t.ly.yscale')) == 105)
+        assert(tonumber(e:var('t.ly.rotate')) == 31)
+        assert(t.ly.rotate == 30.5)
+        e:tag{'var',name='t.ly',system='get_layer_info',style='map',id='layer_info_probe'}
+        e:tag{'var',name='t.ly',system='get_layer_info',style='map',id='layer_info_missing'}
+        assert(t.ly.left == 12 and t.ly.top == 8)
+        assert(t.ly.width == 320 and t.ly.height == 240)
+        assert(t.ly.xscale == 100 and t.ly.yscale == 100)
+        assert(t.ly.rotate == 0 and t.ly.alpha == 255)
+        assert(tonumber(e:var('t.ly.xscale')) == 100)
+        assert(tonumber(e:var('t.ly.yscale')) == 100)
+        assert(tonumber(e:var('t.ly.rotate')) == 0)
+        assert(tonumber(e:var('t.ly.alpha')) == 255)
+        assert(tonumber(e:var('t.ly.left')) == 12)
+        assert(tonumber(e:var('t.ly.top')) == 8)
+        assert(tonumber(e:var('t.ly.width')) == 320)
+        assert(tonumber(e:var('t.ly.height')) == 240)
+    )", "layer info transform fields"),
+          "get_layer_info exposes local transforms and missing-layer defaults");
     Check(events.DoString(R"(
         assert(e:var('s.current_message_layer') == '')
         e:tag{'chgmsg', id='dialogue'}

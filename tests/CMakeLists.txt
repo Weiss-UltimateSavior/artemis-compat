@@ -62,6 +62,10 @@ add_executable(compositor_index_regressions compositor_index_regressions.cpp)
 target_link_libraries(compositor_index_regressions PRIVATE artemis_core)
 add_test(NAME compositor_index_regressions COMMAND compositor_index_regressions)
 
+add_executable(numeric_property_regressions numeric_property_regressions.cpp)
+target_link_libraries(numeric_property_regressions PRIVATE artemis_core)
+add_test(NAME numeric_property_regressions COMMAND numeric_property_regressions)
+
 add_executable(emote_regressions emote_regressions.cpp)
 target_link_libraries(emote_regressions PRIVATE artemis_core)
 add_test(NAME emote_regressions COMMAND emote_regressions)

@@ -623,8 +623,23 @@ float ApplyEase(int ease, float t) {
                     : 1 - EaseIn(fam, (1 - t) * 2) / 2;
 }
 
+std::string UnquoteNumber(const std::string &s) {
+    // Some script serializers add one extra pair of quotes around numeric
+    // attributes. Accept that representation without changing ordinary values.
+    if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') ||
+                          (s.front() == '\'' && s.back() == '\'')))
+        return s.substr(1, s.size() - 2);
+    return s;
+}
+
 float ToF(const std::string &s, float def = 0) {
-    try { return s.empty() ? def : std::stof(s); } catch (...) { return def; }
+    const std::string value = UnquoteNumber(s);
+    try { return value.empty() ? def : std::stof(value); } catch (...) { return def; }
+}
+
+int ToI(const std::string &s, int def = 0) {
+    const std::string value = UnquoteNumber(s);
+    try { return value.empty() ? def : std::stoi(value); } catch (...) { return def; }
 }
 } // namespace
 
@@ -1088,6 +1103,10 @@ Compositor::LayerInfo Compositor::GetLayerInfo(const std::string &id) const {
         info.drag_t = l.drag_t;
         info.drag_r = l.drag_r;
         info.drag_b = l.drag_b;
+        info.xscale = l.sx * 100.0f;
+        info.yscale = l.sy * 100.0f;
+        info.rotate = l.rotate;
+        info.alpha = l.alpha * 255.0f;
     }
     return info;
 }
@@ -1740,9 +1759,15 @@ bool Compositor::SetText(const std::string &id, const std::string &text,
         // Watermark eviction: cells placed earlier in this pass and the other
         // layers' glyphs reference evicted pages — drop them and retry on the
         // fresh cache. A single text exceeding the page budget alone fails.
-        if (attempt >= 1) return false;
+        // Always consume the one-shot notification, including that failure,
+        // so later unrelated text is not rejected by the same eviction.
+        if (attempt >= 1) {
+            glyph_atlas_.ClearReset();
+            return false;
+        }
         for (auto &l : layers_) { l.glyphs.clear(); l.text.clear(); }
         DropGlyphGl();
+        glyph_atlas_.ClearReset();
     }
     // Ensure every referenced page has an up-to-date GPU texture.
     for (size_t i = 0; i < positioned.size(); ++i)
@@ -1803,24 +1828,24 @@ void Compositor::SetProps(const std::string &id,
         if (const auto zoom=attrs.find("zoom"); zoom!=attrs.end())
             l.sx=l.sy=ToF(zoom->second,100)/100.f;
         for (const auto &kv : attrs) {
-            if (kv.first == "x" || kv.first == "left") { l.x = std::stof(kv.second); l.own_pos = true; }
-            else if (kv.first == "y" || kv.first == "top") { l.y = std::stof(kv.second); l.own_pos = true; }
-            else if (kv.first == "w") l.w = std::stof(kv.second);
-            else if (kv.first == "h") l.h = std::stof(kv.second);
+            if (kv.first == "x" || kv.first == "left") { l.x = ToF(kv.second); l.own_pos = true; }
+            else if (kv.first == "y" || kv.first == "top") { l.y = ToF(kv.second); l.own_pos = true; }
+            else if (kv.first == "w") l.w = ToF(kv.second);
+            else if (kv.first == "h") l.h = ToF(kv.second);
             else if (kv.first == "alpha") {
-                const float a = std::stof(kv.second);
+                const float a = ToF(kv.second, 255);
                 l.alpha = std::clamp(a / 255.0f, 0.0f, 1.0f);   // script uses 0-255
             }
             else if (kv.first == "rotate") l.rotate = ToF(kv.second);
             else if (kv.first == "reversex") l.reverse_x = ToF(kv.second)!=0;
             else if (kv.first == "reversey") l.reverse_y = ToF(kv.second)!=0;
-            else if (kv.first == "anchorx") l.ax = std::stof(kv.second);
-            else if (kv.first == "xscale") { const float v = std::stof(kv.second); l.sx = v / 100.0f; }
-            else if (kv.first == "yscale") { const float v = std::stof(kv.second); l.sy = v / 100.0f; }
+            else if (kv.first == "anchorx") l.ax = ToF(kv.second);
+            else if (kv.first == "xscale") { const float v = ToF(kv.second, 100); l.sx = v / 100.0f; }
+            else if (kv.first == "yscale") { const float v = ToF(kv.second, 100); l.sy = v / 100.0f; }
             else if (kv.first == "ownpos") l.own_pos = true;
-            else if (kv.first == "anchory") l.ay = std::stof(kv.second);
+            else if (kv.first == "anchory") l.ay = ToF(kv.second);
             else if (kv.first == "visible") l.visible = (kv.second != "0");
-            else if (kv.first == "z") l.z = std::stoi(kv.second);
+            else if (kv.first == "z") l.z = ToI(kv.second);
             else if (kv.first == "draggable") l.draggable = (kv.second != "0");
             else if (kv.first == "dragarea") {
                 // {left, top, right, bottom} — offsets in stage units
@@ -2427,24 +2452,24 @@ void Compositor::SetProps(const std::string &id,
         if (const auto zoom=attrs.find("zoom"); zoom!=attrs.end())
             l.sx=l.sy=ToF(zoom->second,100)/100.f;
         for (const auto &kv : attrs) {
-            if (kv.first == "x" || kv.first == "left") { l.x = std::stof(kv.second); l.own_pos = true; }
-            else if (kv.first == "y" || kv.first == "top") { l.y = std::stof(kv.second); l.own_pos = true; }
-            else if (kv.first == "w") l.w = std::stof(kv.second);
-            else if (kv.first == "h") l.h = std::stof(kv.second);
+            if (kv.first == "x" || kv.first == "left") { l.x = ToF(kv.second); l.own_pos = true; }
+            else if (kv.first == "y" || kv.first == "top") { l.y = ToF(kv.second); l.own_pos = true; }
+            else if (kv.first == "w") l.w = ToF(kv.second);
+            else if (kv.first == "h") l.h = ToF(kv.second);
             else if (kv.first == "alpha") {
-                const float a = std::stof(kv.second);
+                const float a = ToF(kv.second, 255);
                 l.alpha = std::clamp(a / 255.0f, 0.0f, 1.0f);
             }
             else if (kv.first == "rotate") l.rotate = ToF(kv.second);
             else if (kv.first == "reversex") l.reverse_x = ToF(kv.second)!=0;
             else if (kv.first == "reversey") l.reverse_y = ToF(kv.second)!=0;
-            else if (kv.first == "anchorx") l.ax = std::stof(kv.second);
-            else if (kv.first == "xscale") { const float v = std::stof(kv.second); l.sx = v / 100.0f; }
-            else if (kv.first == "yscale") { const float v = std::stof(kv.second); l.sy = v / 100.0f; }
+            else if (kv.first == "anchorx") l.ax = ToF(kv.second);
+            else if (kv.first == "xscale") { const float v = ToF(kv.second, 100); l.sx = v / 100.0f; }
+            else if (kv.first == "yscale") { const float v = ToF(kv.second, 100); l.sy = v / 100.0f; }
             else if (kv.first == "ownpos") l.own_pos = true;
-            else if (kv.first == "anchory") l.ay = std::stof(kv.second);
+            else if (kv.first == "anchory") l.ay = ToF(kv.second);
             else if (kv.first == "visible") l.visible = (kv.second != "0");
-            else if (kv.first == "z") l.z = std::stoi(kv.second);
+            else if (kv.first == "z") l.z = ToI(kv.second);
             else if (kv.first == "draggable") l.draggable = (kv.second != "0");
             else if (kv.first == "dragarea") {
                 if (std::sscanf(kv.second.c_str(), "%f,%f,%f,%f",
