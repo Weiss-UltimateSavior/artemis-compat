@@ -34,6 +34,11 @@ struct AsbScript {
     std::vector<std::pair<std::string, size_t>> labels;      // name → line index
 };
 
+struct AsbStackEntry {
+    std::string file;
+    size_t index = 0;  // next instruction to execute in this frame
+};
+
 // Parses a full .asb image. Returns false on structural mismatch.
 bool ParseAsb(const std::vector<uint8_t> &data, AsbScript *out);
 
@@ -66,9 +71,13 @@ public:
     size_t Size() const { return script_.lines.size(); }
     const std::string &CurrentFile() const { return current_file_; }
     void Advance() { if (++pc_ >= script_.lines.size()) halted_ = true; }
-    // One native instruction. Lua may jump/call/return while the instruction
-    // runs; do not retain references into the script or advance its new cursor.
+    // One native instruction normally; a bounded burst during debug replay.
+    // Lua may jump/call/return while an instruction runs; do not retain
+    // references into the script or advance its new cursor.
     bool ExecuteLine(LuaEngine& lua);
+    // Replay through transient waits until the saved instruction boundary.
+    void StartDebugSkip(size_t index);
+    bool DebugSkipActive() const { return debug_skip_active_; }
     void JumpTo(const std::string &label);
     // Jump to a compiled instruction index (the ASB branch/goto metadata
     // stores these directly rather than source labels).
@@ -94,9 +103,13 @@ public:
     uint64_t BeginEvent(LuaEngine& lua);
     void EndEvent(uint64_t token);
     void ShiftWaitDeadlines(LuaEngine& lua, std::chrono::steady_clock::duration pause);
+    std::vector<AsbStackEntry> StackEntries() const;
     std::vector<std::string> StackFiles() const;
 
 private:
+    bool ExecuteOneLine(LuaEngine& lua);
+    bool DrainDebugSkipTag(LuaEngine& lua);
+    void FinishDebugSkip(LuaEngine& lua);
     bool Load(const std::vector<uint8_t> &image, const std::string &label);
     void RunLoadTimeLuaChunks();
     bool FindLabel(const std::string &label, size_t *pc);
@@ -110,6 +123,8 @@ private:
 
     AsbScript script_;
     size_t pc_ = 0;
+    bool debug_skip_active_ = false;
+    size_t debug_skip_target_ = 0;
     bool loaded_ = false;
     bool lua_chunks_loaded_ = false;
     // True when pc_ was just set by a [return]/Return(): the instruction there
